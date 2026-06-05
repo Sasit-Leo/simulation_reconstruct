@@ -1,0 +1,16 @@
+# Data directories
+videos/*
+!videos/.gitkeep
+results/*
+!results/.gitkeep
+
+# Training artifacts
+*.db
+__pycache__/
+*.pyc
+.cache/
+*.log
+
+# 3dgrut and 2dgs are separate repos (clone separately)
+3dgrut/
+2dgs/
