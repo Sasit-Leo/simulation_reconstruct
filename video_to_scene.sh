@@ -173,7 +173,7 @@ else
 
     colmap feature_extractor \
         --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" \
-        --ImageReader.camera_model RADIAL --ImageReader.single_camera 1 \
+        --ImageReader.camera_model SIMPLE_RADIAL --ImageReader.single_camera 1 \
         --FeatureExtraction.use_gpu 1 --SiftExtraction.max_image_size "$MAX_IMAGE_SIZE" \
         --SiftExtraction.max_num_features 24576 --SiftExtraction.peak_threshold 0.0033 \
         --SiftExtraction.edge_threshold 5 --SiftExtraction.num_octaves 4 --SiftExtraction.estimate_affine_shape 0 \
