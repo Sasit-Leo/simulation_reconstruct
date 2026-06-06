@@ -177,7 +177,7 @@ else
         rm -rf "$SPARSE_DIR"/*/
         colmap mapper \
             --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" --output_path "$SPARSE_DIR" \
-            --Mapper.ba_global_function_tolerance 1e-6 --Mapper.ba_use_gpu 1 --Mapper.ba_refine_principal_point 1 2>&1 | \
+            --Mapper.ba_global_function_tolerance 1e-6 --Mapper.ba_refine_principal_point 1 2>&1 | \
             awk -v total="$FRAME_COUNT" '/Registering image/ {
                 count++; pct=int(count/total*100);
                 printf "\r  [Mapper] %d/%d frames (%d%%)", count, total, pct
