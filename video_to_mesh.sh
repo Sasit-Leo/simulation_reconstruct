@@ -4,7 +4,7 @@
 set -euo pipefail
 
 VIDEO_PATH=""; OUTPUT_DIR=""; EXPERIMENT_NAME=""
-FPS=10; MAX_IMAGE_SIZE=1920; GPU_ID=0; TRAIN_ITERATIONS=30000; DOWNSAMPLE_FACTOR=1
+FPS=10; MAX_IMAGE_SIZE=1920; GPU_ID=0; TRAIN_ITERATIONS=30000; DOWNSAMPLE_FACTOR=2
 SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false
 VISUAL_FILTER=false  # -V: interactive point cloud crop before training
 CONDA_ENV="vid2sim"; TWODGS_DIR="$(cd "$(dirname "$0")" && pwd)/2dgs"
@@ -299,6 +299,7 @@ if [ "$SKIP_TRAINING" = true ]; then
     step "Step 3/4: 跳过训练"
 else
     step "Step 3/4: 2DGS 训练 (${TRAIN_ITERATIONS} iter)"
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     cd "$TWODGS_DIR"
 
     # 2DGS: -s <source_path> (containing sparse/0/), -m <model_output>

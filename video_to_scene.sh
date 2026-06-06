@@ -13,7 +13,7 @@ FPS=10
 MAX_IMAGE_SIZE=1920
 GPU_ID=0
 TRAIN_ITERATIONS=45000
-DOWNSAMPLE_FACTOR=1
+DOWNSAMPLE_FACTOR=2
 SKIP_USDZ=false
 SKIP_FFMPEG=false
 SKIP_COLMAP=false
@@ -255,6 +255,7 @@ if [ "$SKIP_TRAINING" = true ]; then
 else
     step "Step 3/4: 训练 (${TRAIN_ITERATIONS} iter)"
 
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     cd "$THREEDGRUT_DIR"
     TRAIN_CMD=(python train.py --config-name apps/colmap_3dgut.yaml
         "path=$OUTPUT_DIR" "out_dir=$RUNS_DIR" "experiment_name=$EXPERIMENT_NAME"
