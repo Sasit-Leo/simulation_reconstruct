@@ -276,7 +276,7 @@ else
         "strategy.prune_scale.end_iteration=30000" \
         "strategy.prune_scale.frequency=500" \
         "strategy.prune_scale.threshold=1.0" \
-        "num_workers=20")
+        "num_workers=4")
     [ "$SKIP_USDZ" = false ] && TRAIN_CMD+=("export_usd.enabled=true" "export_usd.format=nurec" "export_usd.apply_normalizing_transform=false")
 
     # auto-resume: only if checkpoint exists, training incomplete, and data unchanged
