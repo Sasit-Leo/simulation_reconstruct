@@ -271,8 +271,7 @@ else
 
         "strategy.density_decay.start_iteration=500" \
         "strategy.density_decay.end_iteration=45000" \
-        "post_processing.method=ppisp" \
-        "post_processing.n_distillation_steps=5000" \
+
         "strategy.prune_scale.start_iteration=500" \
         "strategy.prune_scale.end_iteration=30000" \
         "strategy.prune_scale.frequency=500" \
