@@ -268,7 +268,8 @@ else
         "optimizer.params.features_specular.lr=0.001" \
         "loss.use_l2=true" \
         "loss.lambda_l2=0.3" \
-
+        "post_processing.method=ppisp" \
+        "post_processing.n_distillation_steps=5000" \
         "strategy.density_decay.start_iteration=500" \
         "strategy.density_decay.end_iteration=45000" \
 
