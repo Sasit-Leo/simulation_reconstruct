@@ -12,7 +12,7 @@ EXPERIMENT_NAME=""
 FPS=10
 MAX_IMAGE_SIZE=1920
 GPU_ID=0
-TRAIN_ITERATIONS=45000
+TRAIN_ITERATIONS=30000
 DOWNSAMPLE_FACTOR=2
 SKIP_USDZ=false
 SKIP_FFMPEG=false
@@ -261,7 +261,7 @@ else
         "path=$OUTPUT_DIR" "out_dir=$RUNS_DIR" "experiment_name=$EXPERIMENT_NAME"
         "dataset.downsample_factor=$DOWNSAMPLE_FACTOR"
         "n_iterations=$TRAIN_ITERATIONS" "scheduler.positions.max_steps=$TRAIN_ITERATIONS"
-        "checkpoint.iterations=[5000,10000,15000,20000,25000,30000,35000,40000,45000]" \
+        "checkpoint.iterations=[5000,10000,15000,20000,25000,30000]" \
         "render.particle_radiance_sph_degree=4" \
         "model.progressive_training.max_n_features=4" \
         "model.progressive_training.increase_frequency=500" \
@@ -271,7 +271,7 @@ else
         "post_processing.method=ppisp" \
         "post_processing.n_distillation_steps=5000" \
         "strategy.density_decay.start_iteration=500" \
-        "strategy.density_decay.end_iteration=45000" \
+        "strategy.density_decay.end_iteration=30000" \
 
         "strategy.prune_scale.start_iteration=500" \
         "strategy.prune_scale.end_iteration=30000" \
