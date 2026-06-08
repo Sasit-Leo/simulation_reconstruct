@@ -4,7 +4,7 @@
 set -euo pipefail
 
 VIDEO_PATH=""; OUTPUT_DIR=""; EXPERIMENT_NAME=""
-FPS=10; MAX_IMAGE_SIZE=1920; GPU_ID=0; TRAIN_ITERATIONS=30000; DOWNSAMPLE_FACTOR=2
+FPS=10; MAX_IMAGE_SIZE=1920; GPU_ID=0; TRAIN_ITERATIONS=60000; DOWNSAMPLE_FACTOR=2
 SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false
 VISUAL_FILTER=false  # -V: interactive point cloud crop before training
 CONDA_ENV="vid2sim"; TWODGS_DIR="$(cd "$(dirname "$0")" && pwd)/2dgs"
@@ -155,15 +155,15 @@ else
         --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" \
         --ImageReader.camera_model SIMPLE_RADIAL --ImageReader.single_camera 1 \
         --FeatureExtraction.use_gpu 1 --SiftExtraction.max_image_size "$MAX_IMAGE_SIZE" \
-        --SiftExtraction.max_num_features 32768 --SiftExtraction.peak_threshold 0.002 \
+        --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.002 \
         --SiftExtraction.edge_threshold 5 --SiftExtraction.num_octaves 5 --SiftExtraction.estimate_affine_shape 0 \
         --SiftExtraction.domain_size_pooling 0 2>&1 | tail -2
 
     [ ! -f "$DATABASE_PATH" ] && { err "特征提取失败"; exit 1; }
 
     colmap vocab_tree_matcher \
-        --database_path "$DATABASE_PATH" --FeatureMatching.use_gpu 1 --FeatureMatching.max_num_matches 32768 \
-        --SiftMatching.max_ratio 0.7 --SiftMatching.max_distance 0.5 --SiftMatching.cross_check 1 2>&1 | tail -2
+        --database_path "$DATABASE_PATH" --FeatureMatching.use_gpu 1 --FeatureMatching.max_num_matches 65536 \
+        --SiftMatching.max_ratio 0.8 --SiftMatching.max_distance 0.7 --SiftMatching.cross_check 1 2>&1 | tail -2
 
     mkdir -p "$SPARSE_DIR"
 

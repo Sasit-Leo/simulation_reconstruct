@@ -12,7 +12,7 @@ EXPERIMENT_NAME=""
 FPS=10
 MAX_IMAGE_SIZE=1920
 GPU_ID=0
-TRAIN_ITERATIONS=30000
+TRAIN_ITERATIONS=60000
 DOWNSAMPLE_FACTOR=2
 SKIP_USDZ=false
 SKIP_FFMPEG=false
@@ -175,15 +175,15 @@ else
         --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" \
         --ImageReader.camera_model SIMPLE_RADIAL --ImageReader.single_camera 1 \
         --FeatureExtraction.use_gpu 1 --SiftExtraction.max_image_size "$MAX_IMAGE_SIZE" \
-        --SiftExtraction.max_num_features 24576 --SiftExtraction.peak_threshold 0.0033 \
-        --SiftExtraction.edge_threshold 5 --SiftExtraction.num_octaves 4 --SiftExtraction.estimate_affine_shape 0 \
+        --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.0033 \
+        --SiftExtraction.edge_threshold 5 --SiftExtraction.num_octaves 5 --SiftExtraction.estimate_affine_shape 0 \
         --SiftExtraction.domain_size_pooling 0 2>&1 | tail -2
 
     [ ! -f "$DATABASE_PATH" ] && { err "特征提取失败"; exit 1; }
 
     colmap vocab_tree_matcher \
-        --database_path "$DATABASE_PATH" --FeatureMatching.use_gpu 1 --FeatureMatching.max_num_matches 32768 \
-        --SiftMatching.max_ratio 0.7 --SiftMatching.max_distance 0.5 --SiftMatching.cross_check 1 2>&1 | tail -2
+        --database_path "$DATABASE_PATH" --FeatureMatching.use_gpu 1 --FeatureMatching.max_num_matches 65536 \
+        --SiftMatching.max_ratio 0.8 --SiftMatching.max_distance 0.7 --SiftMatching.cross_check 1 2>&1 | tail -2
 
     mkdir -p "$SPARSE_DIR"
 
@@ -261,7 +261,7 @@ else
         "path=$OUTPUT_DIR" "out_dir=$RUNS_DIR" "experiment_name=$EXPERIMENT_NAME"
         "dataset.downsample_factor=$DOWNSAMPLE_FACTOR"
         "n_iterations=$TRAIN_ITERATIONS" "scheduler.positions.max_steps=$TRAIN_ITERATIONS"
-        "checkpoint.iterations=[5000,10000,15000,20000,25000,30000]" \
+        "checkpoint.iterations=[10000,20000,30000,40000,50000,60000]" \
         "render.particle_radiance_sph_degree=4" \
         "model.progressive_training.max_n_features=4" \
         "model.progressive_training.increase_frequency=500" \
@@ -271,7 +271,7 @@ else
         "post_processing.method=ppisp" \
         "post_processing.n_distillation_steps=5000" \
         "strategy.density_decay.start_iteration=500" \
-        "strategy.density_decay.end_iteration=30000" \
+        "strategy.density_decay.end_iteration=60000" \
 
         "strategy.prune_scale.start_iteration=500" \
         "strategy.prune_scale.end_iteration=30000" \
