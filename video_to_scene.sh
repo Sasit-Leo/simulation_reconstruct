@@ -31,7 +31,7 @@ step()   { echo -e "\n${BLUE}▶${NC} $(date '+%H:%M:%S') $*"; }
 
 usage() { head -36 "$0" | tail -20; exit 0; }
 
-while getopts "v:o:n:f:s:g:i:d:ucSTh" opt; do
+while getopts "v:o:n:f:s:g:i:d:uAcSTh" opt; do
     case $opt in
         v) VIDEO_PATH="$OPTARG" ;;  o) OUTPUT_DIR="$OPTARG" ;;
         n) EXPERIMENT_NAME="$OPTARG" ;; f) FPS="$OPTARG" ;;
