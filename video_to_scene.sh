@@ -251,7 +251,7 @@ fi
 RUNS_DIR="$OUTPUT_DIR/runs"
 
 # Check for completed checkpoint before deciding to train
-PREV_CKPT=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -name "ckpt_last.pt" -type f 2>/dev/null | sort | tail -1)
+PREV_CKPT=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -name "ckpt_last.pt" -type f 2>/dev/null | sort | tail -1 || true)
 if [ -n "$PREV_CKPT" ] && [ -d "$(dirname "$PREV_CKPT")/ours_${TRAIN_ITERATIONS}" ]; then
     SKIP_TRAINING=true
     log "发现已完成 checkpoint，自动跳过训练"
