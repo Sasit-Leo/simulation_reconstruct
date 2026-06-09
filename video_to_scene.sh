@@ -310,7 +310,7 @@ fi
 # ================================================================================================
 # Step 4 — Clean Gaussians + Export USDZ
 # ================================================================================================
-if [ "$SKIP_USDZ" = false ] && [ "$SKIP_TRAINING" = false ]; then
+if [ "$SKIP_USDZ" = false ]; then
     step "Step 4/4: 清理 + USDZ 导出"
     [ -z "${TRAIN_OUTDIR:-}" ] && TRAIN_OUTDIR=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -maxdepth 2 -name "ckpt_last.pt" -type f -printf "%h\n" 2>/dev/null | sort | tail -1)
     CKPT_SRC="${TRAIN_OUTDIR}/ckpt_last.pt"
