@@ -18,6 +18,7 @@ SKIP_USDZ=false
 SKIP_FFMPEG=false
 SKIP_COLMAP=false
 SKIP_TRAINING=false
+SKIP_CLAHE=false
 
 CONDA_ENV="vid2sim"
 THREEDGRUT_DIR="$(cd "$(dirname "$0")" && pwd)/3dgrut"
@@ -36,7 +37,7 @@ while getopts "v:o:n:f:s:g:i:d:ucSTh" opt; do
         n) EXPERIMENT_NAME="$OPTARG" ;; f) FPS="$OPTARG" ;;
         s) MAX_IMAGE_SIZE="$OPTARG" ;; g) GPU_ID="$OPTARG" ;;
         i) TRAIN_ITERATIONS="$OPTARG" ;; d) DOWNSAMPLE_FACTOR="$OPTARG" ;;
-        u) SKIP_USDZ=true ;;  c) SKIP_FFMPEG=true ;;
+        u) SKIP_USDZ=true ;;  A) SKIP_CLAHE=true ;;  c) SKIP_FFMPEG=true ;;
         S) SKIP_COLMAP=true ;; T) SKIP_TRAINING=true ;;  h) usage ;;  *) usage ;;
     esac
 done
@@ -117,7 +118,10 @@ log "图片: $FRAME_COUNT 帧"
 # CLAHE 对比度增强 — 金属/透明表面特征更明显
 if [ "$SKIP_FFMPEG" = false ] || [ "$FRAME_COUNT" -gt 0 ]; then
     CLAHE_FLAG="${IMAGE_DIR}/.clahe_done"
-    if [ ! -f "$CLAHE_FLAG" ]; then
+    if [ "$SKIP_CLAHE" = true ]; then
+        touch "$CLAHE_FLAG" 2>/dev/null || true
+        log "跳过 CLAHE"
+    elif [ ! -f "$CLAHE_FLAG" ]; then
         log "CLAHE 增强..."
         python -c "
 import cv2
