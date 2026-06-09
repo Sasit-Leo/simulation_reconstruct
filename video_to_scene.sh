@@ -250,6 +250,13 @@ fi
 # ================================================================================================
 RUNS_DIR="$OUTPUT_DIR/runs"
 
+# Check for completed checkpoint before deciding to train
+PREV_CKPT=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -name "ckpt_last.pt" -type f 2>/dev/null | sort | tail -1)
+if [ -n "$PREV_CKPT" ] && [ -d "$(dirname "$PREV_CKPT")/ours_${TRAIN_ITERATIONS}" ]; then
+    SKIP_TRAINING=true
+    log "发现已完成 checkpoint，自动跳过训练"
+fi
+
 if [ "$SKIP_TRAINING" = true ]; then
     step "Step 3/4: 跳过训练"
 else
@@ -280,28 +287,21 @@ else
         "num_workers=4")
     [ "$SKIP_USDZ" = false ] && TRAIN_CMD+=("export_usd.enabled=true" "export_usd.format=nurec" "export_usd.apply_normalizing_transform=false")
 
-    # auto-resume: if full checkpoint exists, skip training entirely
-    PREV_CKPT=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -name "ckpt_last.pt" -type f 2>/dev/null | sort | tail -1)
-    if [ -n "$PREV_CKPT" ]; then
-        CKPT_DIR=$(dirname "$PREV_CKPT")
-        if [ -d "$CKPT_DIR/ours_${TRAIN_ITERATIONS}" ]; then
-            log "checkpoint 已完成，跳过训练"
-            SKIP_TRAINING=true
-        elif [ "$SPARSE_DIR/0/cameras.bin" -nt "$PREV_CKPT" ]; then
+    # auto-resume: add resume flag for incomplete training
+    if [ -n "$PREV_CKPT" ] && [ ! -d "$(dirname "$PREV_CKPT")/ours_${TRAIN_ITERATIONS}" ]; then
+        if [ "$SPARSE_DIR/0/cameras.bin" -nt "$PREV_CKPT" ]; then
             warn "COLMAP 数据已更新，忽略旧 checkpoint"
         else
             TRAIN_CMD+=("resume=$PREV_CKPT"); log "续训: $PREV_CKPT"
         fi
     fi
 
-    if [ "$SKIP_TRAINING" != true ]; then
-        mkdir -p "$RUNS_DIR/$EXPERIMENT_NAME"
-        set +o pipefail
-        "${TRAIN_CMD[@]}" 2>&1 | tee "$RUNS_DIR/$EXPERIMENT_NAME/train.log" | grep -vE "━|┃|┏|┓|┗|┛|Training Statistics|Test Metrics" || true
-        TRAIN_EXIT=${PIPESTATUS[0]}
-        set -o pipefail
-        [ "$TRAIN_EXIT" -ne 0 ] && { err "训练异常退出 (exit $TRAIN_EXIT)"; exit 1; }
-    fi
+    mkdir -p "$RUNS_DIR/$EXPERIMENT_NAME"
+    set +o pipefail
+    "${TRAIN_CMD[@]}" 2>&1 | tee "$RUNS_DIR/$EXPERIMENT_NAME/train.log" | grep -vE "━|┃|┏|┓|┗|┛|Training Statistics|Test Metrics" || true
+    TRAIN_EXIT=${PIPESTATUS[0]}
+    set -o pipefail
+    [ "$TRAIN_EXIT" -ne 0 ] && { err "训练异常退出 (exit $TRAIN_EXIT)"; exit 1; }
 
     TRAIN_OUTDIR=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -maxdepth 2 -name "ckpt_last.pt" -type f -printf "%h\n" 2>/dev/null | sort | tail -1)
     log "完成: $TRAIN_OUTDIR"
