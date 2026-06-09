@@ -305,7 +305,7 @@ else
     LATEST_ITER=$(find "$TWODGS_BASE" -name "iteration_*" -type d 2>/dev/null | sed 's/.*iteration_//' | sort -n | tail -1 || true)
     if [ -n "$LATEST_ITER" ] && [ "$LATEST_ITER" -lt "$TRAIN_ITERATIONS" ]; then
         RESUME_DIR=$(find "$TWODGS_BASE" -name "iteration_${LATEST_ITER}" -type d 2>/dev/null | sort | tail -1 || true)
-        RESUME_CKPT=$(dirname "$RESUME_DIR")/chkpnt${LATEST_ITER}.pth
+        RESUME_CKPT=$(dirname "$(dirname "$RESUME_DIR")")/chkpnt${LATEST_ITER}.pth
         if [ -f "$RESUME_CKPT" ]; then
             TWODGS_OUT=$(dirname "$(dirname "$RESUME_DIR")")
             log "续训: $TWODGS_OUT (从 $LATEST_ITER/$TRAIN_ITERATIONS)"
