@@ -14,19 +14,7 @@
 | 磁盘  | 单次重建 50-200 GB（含中间文件）                    |
 | 系统  | Ubuntu 22.04, CUDA 12.4, NVIDIA Driver ≥ 550 |
 
-### 快速安装
-
-```bash
-# 从备份文件恢复环境（推荐）
-conda env create -f vid2sim_env.yml
-conda activate vid2sim
-
-# 设置 GPU 架构
-conda env config vars set -n vid2sim TORCH_CUDA_ARCH_LIST=8.9
-conda activate vid2sim
-```
-
-### 手动安装（从零构建）
+### 环境搭建
 
 ```bash
 # 1. 基础环境
