@@ -305,6 +305,7 @@ else
     # 2DGS: -s <source_path> (containing sparse/0/), -m <model_output>
     # --resolution matches DOWNSAMPLE_FACTOR: 1=4K full res, 2=2K, etc.
     # SH degree 4 for metal specular, lambda_normal for bar surface smoothness
+    set +o pipefail
     python train.py \
         -s "$OUTPUT_DIR" \
         -m "$TWODGS_OUT" \
@@ -316,6 +317,9 @@ else
         --data_device cuda \
         --save_iterations 5000 \
         2>&1 | tee "$TWODGS_OUT/train.log"
+    TRAIN_EXIT=${PIPESTATUS[0]}
+    set -o pipefail
+    [ "$TRAIN_EXIT" -ne 0 ] && { err "训练异常退出 (exit $TRAIN_EXIT)"; exit 1; }
 
     log "训练完成: $TWODGS_OUT"
 fi
@@ -417,8 +421,12 @@ fi
 # ================================================================================================
 # Step 4 — TSDF Mesh Extraction + Geometry Optimization + Export
 # ================================================================================================
-if [ "$SKIP_TRAINING" = true ]; then
-    step "Step 4/4: 跳过网格重建"
+# Step 4 runs if training output exists (even if training was skipped via -T)
+TWODGS_ITER=$(find "$TWODGS_OUT/point_cloud" -name "iteration_*" -type d 2>/dev/null | sort | tail -1)
+if [ -z "$TWODGS_ITER" ] && [ "$SKIP_TRAINING" = true ]; then
+    step "Step 4/4: 跳过网格重建 (无训练输出)"
+elif [ -z "$TWODGS_ITER" ] && [ "$SKIP_TRAINING" != true ]; then
+    warn "Step 4/4: 无训练输出，跳过网格重建"
 else
     step "Step 4/4: 网格重建 + 导出"
 

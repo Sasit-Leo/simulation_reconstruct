@@ -9,50 +9,108 @@
 | 组件  | 要求                                           |
 | --- | -------------------------------------------- |
 | GPU | NVIDIA RTX 系列（4090 / 24 GB）                  |
-| 显存  | ≥ 16 GB（4K 全分辨率训练需 24 GB）                    |
+| 显存  | ≥ 16 GB（`-d 1` 全分辨率需 >24 GB，默认 `-d 2`） |
 | 内存  | ≥ 32 GB                                      |
-| 磁盘  | 单次重建 50-200 GB（含中间文件）                        |
+| 磁盘  | 单次重建 50-200 GB（含中间文件）                    |
 | 系统  | Ubuntu 22.04, CUDA 12.4, NVIDIA Driver ≥ 550 |
 
-### Conda 环境
+### 快速安装
 
 ```bash
-# 创建环境
+# 从备份文件恢复环境（推荐）
+conda env create -f vid2sim_env.yml
+conda activate vid2sim
+
+# 设置 GPU 架构
+conda env config vars set -n vid2sim TORCH_CUDA_ARCH_LIST=8.9
+conda activate vid2sim
+```
+
+### 手动安装（从零构建）
+
+```bash
+# 1. 基础环境
 conda create -n vid2sim python=3.11 -y
 conda activate vid2sim
 
-# PyTorch (CUDA 12.4)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# 2. PyTorch CUDA 12.4（3DGUT 官方测试版本）
+pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
 
-# 核心依赖
+# 3. 核心依赖
 pip install gsplat plyfile open3d trimesh opencv-python scikit-learn
 
-# COLMAP (系统级安装, 3.13.0+)
-# Ubuntu: sudo apt install colmap
-# 或 conda: conda install -c conda-forge colmap
+# 4. CUDA 编译的 COLMAP 3.13.0（GPU Bundle Adjustment）
+# 需从源码编译 Ceres + COLMAP，参见下方 [编译 COLMAP with CUDA]
+conda install -c conda-forge colmap  # 或使用系统包管理器安装基础版
 
-# FFmpeg
+# 5. 可选依赖
+pip install --no-build-isolation \
+    "fused-ssim @ git+https://github.com/rahul-goel/fused-ssim@1272e21"
+pip install --no-build-isolation \
+    "ppisp @ git+https://github.com/nv-tlabs/ppisp@v1.0.1"
+
+# 6. GPU 架构
+conda env config vars set -n vid2sim TORCH_CUDA_ARCH_LIST=8.9
+
+# 7. FFmpeg（系统级）
 # Ubuntu: sudo apt install ffmpeg
 ```
 
-### 手动编译包
+### 编译 COLMAP with CUDA
 
-以下包无法通过 pip 直接安装，需从源码编译。编译时注意设置 `TORCH_CUDA_ARCH_LIST` 匹配 GPU 架构（RTX 4090 = `8.9`）。
+conda-forge 的 COLMAP 不带 GPU Bundle Adjustment。需从源码编译：
 
 ```bash
 conda activate vid2sim
-export TORCH_CUDA_ARCH_LIST=8.9
 
-# fused-ssim — SSIM 损失 CUDA 加速 (3DGUT 依赖)
-pip install --no-build-isolation \
-    "fused-ssim @ git+https://github.com/rahul-goel/fused-ssim@1272e21a282342e89537159e4bad508b19b34157"
+# 编译 Ceres Solver 2.2.0 with CUDA
+git clone --depth 1 --branch 2.2.0 https://github.com/ceres-solver/ceres-solver /tmp/ceres
+cd /tmp/ceres
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    -DUSE_CUDA=ON -DBUILD_SHARED_LIBS=ON \
+    -DCMAKE_CUDA_ARCHITECTURES=89 -DBUILD_EXAMPLES=OFF -DBUILD_TESTING=OFF \
+    -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX
+cmake --build build -j$(nproc) && cmake --install build
 
-# diff-surfel-rasterization — 2DGS 微分面元渲染器
-cd simulation_reconstruct/2dgs && git submodule update --init
-pip install --no-build-isolation submodules/diff-surfel-rasterization
+# 编译 COLMAP 3.13.0 with CUDA
+git clone --depth 1 --branch 3.13.0 https://github.com/colmap/colmap /tmp/colmap
+cd /tmp/colmap
+# 安装缺失依赖
+conda install -c conda-forge -y boost-cpp libboost-devel cgal mesa-libgl-devel-cos7-x86_64
+ln -sf $CONDA_PREFIX/lib/libGLX.so.0 $CONDA_PREFIX/lib/libGLX.so
+ln -sf $CONDA_PREFIX/lib/libGL.so.1 $CONDA_PREFIX/lib/libGL.so
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    -DCUDA_ENABLED=ON -DCMAKE_CUDA_ARCHITECTURES=89 \
+    -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
+    -DCeres_DIR=$CONDA_PREFIX/lib/cmake/Ceres \
+    -DBoost_DIR=$CONDA_PREFIX/lib/cmake/Boost-1.84.0
+cmake --build build -j$(nproc) && cmake --install build
+```
 
-# simple-knn — 2DGS KNN 初始化
-pip install --no-build-isolation submodules/simple-knn
+### 3DGUT 内核补丁
+
+3DGUT 有两个边界条件 bug 需要手动修复：
+
+**`threedgut_tracer/src/gutRenderer.cu`**（`numParticles=0` 时非法内存访问）：
+```cpp
+// 在 "fetch total number of particle/tile intersections" 之前添加：
+if (numParticles == 0) {
+    return Status();
+}
+```
+
+**`threedgrut/strategy/gs.py`**（空梯度 / 字典访问错误）：
+```python
+# update_gradient_buffer 方法中：
+params_grad = self.model.positions.grad
+assert params_grad is not None  # 移到 mask 之前
+if params_grad.numel() == 0: return
+mask = (params_grad != 0).max(dim=1)[0]
+if not mask.any(): return
+
+# prune_gaussians_scale 方法中：
+intr = list(dataset.intrinsics.values())[0]  # 曾是 dataset.intrinsic[0]
+max_focal = torch.as_tensor(intr[0]['focal_length']).float().max()
 ```
 
 ### 验证
@@ -62,14 +120,10 @@ conda activate vid2sim
 python -c "
 import torch; print(f'Torch {torch.__version__}, CUDA {torch.cuda.is_available()}')
 import gsplat; print(f'gsplat {gsplat.__version__}')
-import open3d; print(f'open3d {open3d.__version__}')
-import trimesh; print(f'trimesh {trimesh.__version__}')
-from diff_surfel_rasterization import GaussianRasterizer; print('diff-surfel OK')
-from fused_ssim import fused_ssim; print('fused-ssim OK')
-from simple_knn._C import distCUDA2; print('simple-knn OK')
+import ppisp; print(f'ppisp {ppisp.__version__}')
+import fused_ssim; print('fused-ssim OK')
 "
-ffmpeg -version | head -1
-colmap --version | head -1
+colmap help 2>&1 | grep CUDA  # 应显示 "(Commit ... with CUDA)"
 ```
 
 ### 目录结构
