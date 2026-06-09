@@ -295,7 +295,7 @@ else
 
     mkdir -p "$RUNS_DIR/$EXPERIMENT_NAME"
     set +o pipefail
-    "${TRAIN_CMD[@]}" 2>&1 | tee "$RUNS_DIR/$EXPERIMENT_NAME/train.log" | grep -vE "━|┃|┏|┓|┗|┛|Training Statistics|Test Metrics"
+    "${TRAIN_CMD[@]}" 2>&1 | tee "$RUNS_DIR/$EXPERIMENT_NAME/train.log" | grep -vE "━|┃|┏|┓|┗|┛|Training Statistics|Test Metrics" || true
     TRAIN_EXIT=${PIPESTATUS[0]}
     set -o pipefail
     [ "$TRAIN_EXIT" -ne 0 ] && { err "训练异常退出 (exit $TRAIN_EXIT)"; exit 1; }
