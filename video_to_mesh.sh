@@ -5,7 +5,7 @@ set -euo pipefail
 
 VIDEO_PATH=""; OUTPUT_DIR=""; EXPERIMENT_NAME=""
 FPS=5; MAX_IMAGE_SIZE=1920; GPU_ID=0; TRAIN_ITERATIONS=60000; DOWNSAMPLE_FACTOR=2
-SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false; SKIP_USDZ=false
+SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false; SKIP_USDZ=false; SKIP_CLAHE=false
 VISUAL_FILTER=false  # -V: interactive point cloud crop before training
 CONDA_ENV="vid2sim"; TWODGS_DIR="$(cd "$(dirname "$0")" && pwd)/2dgs"
 CULL_FACTOR=1.5   # IQR multiplier for spatial culling (larger = looser)
@@ -19,14 +19,14 @@ step() { echo -e "\n${BLUE}▶${NC} $(date '+%H:%M:%S') $*"; }
 
 usage() { head -32 "$0" | tail -16; exit 0; }
 
-while getopts "v:o:n:f:s:g:i:d:b:cSThVu" opt; do
+while getopts "v:o:n:f:s:g:i:d:b:AcSThVu" opt; do
     case $opt in
         v) VIDEO_PATH="$OPTARG" ;;  o) OUTPUT_DIR="$OPTARG" ;;
         n) EXPERIMENT_NAME="$OPTARG" ;; f) FPS="$OPTARG" ;;
         s) MAX_IMAGE_SIZE="$OPTARG" ;; g) GPU_ID="$OPTARG" ;;
         i) TRAIN_ITERATIONS="$OPTARG" ;; d) DOWNSAMPLE_FACTOR="$OPTARG" ;;
         b) CULL_FACTOR="$OPTARG" ;;
-        c) SKIP_FFMPEG=true ;;  S) SKIP_COLMAP=true ;;  T) SKIP_TRAINING=true ;;  u) SKIP_USDZ=true ;;  V) VISUAL_FILTER=true ;;
+        c) SKIP_FFMPEG=true ;;  A) SKIP_CLAHE=true ;;  S) SKIP_COLMAP=true ;;  T) SKIP_TRAINING=true ;;  u) SKIP_USDZ=true ;;  V) VISUAL_FILTER=true ;;
         h) usage ;;  *) usage ;;
     esac
 done
@@ -102,7 +102,10 @@ log "图片: $FRAME_COUNT 帧"
 # CLAHE 对比度增强
 if [ "$SKIP_FFMPEG" = false ]; then
     CLAHE_FLAG="${IMAGE_DIR}/.clahe_done"
-    if [ ! -f "$CLAHE_FLAG" ]; then
+    if [ "$SKIP_CLAHE" = true ]; then
+        touch "$CLAHE_FLAG" 2>/dev/null || true
+        log "跳过 CLAHE"
+    elif [ ! -f "$CLAHE_FLAG" ]; then
         log "CLAHE 增强..."
         python -c "
 import cv2; from pathlib import Path
