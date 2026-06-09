@@ -293,12 +293,24 @@ TWODGS_BASE="$OUTPUT_DIR/runs/mesh_2dgs"
 TIMESTAMP=$(date +%m%d_%H%M%S)
 TWODGS_OUT="${TWODGS_BASE}/${EXPERIMENT_NAME}-${TIMESTAMP}"
 
-# Check for completed training in previous runs
+# Check for completed training in previous runs, or find checkpoint to resume
 PREV_MESH=$(find "$TWODGS_BASE" -name "iteration_${TRAIN_ITERATIONS}" -type d 2>/dev/null | sort | tail -1 || true)
+RESUME_CKPT=""
 if [ -n "$PREV_MESH" ]; then
     SKIP_TRAINING=true
     TWODGS_OUT=$(dirname "$(dirname "$PREV_MESH")")
     log "发现已完成训练: $TWODGS_OUT，跳过训练"
+else
+    # Look for latest incomplete checkpoint to resume
+    LATEST_ITER=$(find "$TWODGS_BASE" -name "iteration_*" -type d 2>/dev/null | sed 's/.*iteration_//' | sort -n | tail -1 || true)
+    if [ -n "$LATEST_ITER" ] && [ "$LATEST_ITER" -lt "$TRAIN_ITERATIONS" ]; then
+        RESUME_DIR=$(find "$TWODGS_BASE" -name "iteration_${LATEST_ITER}" -type d 2>/dev/null | sort | tail -1 || true)
+        RESUME_CKPT=$(dirname "$RESUME_DIR")/chkpnt${LATEST_ITER}.pth
+        if [ -f "$RESUME_CKPT" ]; then
+            TWODGS_OUT=$(dirname "$(dirname "$RESUME_DIR")")
+            log "续训: $TWODGS_OUT (从 $LATEST_ITER/$TRAIN_ITERATIONS)"
+        fi
+    fi
 fi
 
 mkdir -p "$TWODGS_OUT"
@@ -313,17 +325,20 @@ else
     # 2DGS: -s <source_path> (containing sparse/0/), -m <model_output>
     # --resolution matches DOWNSAMPLE_FACTOR: 1=4K full res, 2=2K, etc.
     # SH degree 4 for metal specular, lambda_normal for bar surface smoothness
+    RESUME_FLAG=""
+    [ -n "$RESUME_CKPT" ] && RESUME_FLAG="--start_checkpoint $RESUME_CKPT"
     set +o pipefail
     python train.py \
         -s "$OUTPUT_DIR" \
         -m "$TWODGS_OUT" \
+        $RESUME_FLAG \
         --iterations "$TRAIN_ITERATIONS" \
         --resolution "$DOWNSAMPLE_FACTOR" \
         --sh_degree 4 \
         --lambda_normal 0.05 \
         --lambda_dist 1.0 \
         --data_device cuda \
-        --save_iterations 5000 \
+        --save_iterations $(seq -s ' ' 5000 5000 $TRAIN_ITERATIONS) \
         2>&1 | tee "$TWODGS_OUT/train.log"
     TRAIN_EXIT=${PIPESTATUS[0]}
     set -o pipefail
