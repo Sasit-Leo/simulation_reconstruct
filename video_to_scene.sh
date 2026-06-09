@@ -427,6 +427,9 @@ else:
     json.dump({'R': np.eye(3).tolist(), 'angle': 0.0, 'floor_z': float(np.percentile(pos_f[:,2], 5))},
               open('${TRAIN_OUTDIR}/rotation.json', 'w'))
 
+for k in list(ckpt.keys()):
+    if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
+        ckpt[k] = torch.nn.Parameter(ckpt[k])
 torch.save(ckpt, '$CKPT_CLEAN')
 print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
 " 2>&1 && log "清理完成: $CKPT_CLEAN"
@@ -444,7 +447,7 @@ print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
             [ -n "$EXPORT_USDZ" ] && cp "$EXPORT_USDZ" "$USDZ_FILE" && log "USDZ: $USDZ_FILE (from training export)"
         fi
         rm -f "$CKPT_CLEAN"
-        find "$TRAIN_OUTDIR" -maxdepth 1 -name "export_*.usdz" ! -name "scene_nurec.usdz" -delete 2>/dev/null || true
+        # Note: do NOT delete export_*.usdz here — scene_nurec.usdz may be a copy of it
     else
         warn "未找到 checkpoint, 跳过清理导出"
     fi
