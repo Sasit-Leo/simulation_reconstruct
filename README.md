@@ -222,7 +222,7 @@ ground = UsdFileCfg(usd_path=".../ground_collision.usda")    # 地面碰撞
 输出结构：
 
 ```
-results/<video>_mesh/runs/mesh_2dgs/<experiment>-MMDD_HHMMSS/
+results/<video>_mesh/runs/<experiment>/<experiment>-MMDD_HHMMSS/
 ├── mesh_<video>.usda            # ★ 网格 (Z-up, 碰撞已集成, 底面已封闭)
 ├── mesh_<video>.ply             # PLY 网格
 ├── reconstruction.json         # 网格指标+COLMAP信息+耗时

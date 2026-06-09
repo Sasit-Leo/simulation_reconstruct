@@ -289,9 +289,9 @@ fi
 # ================================================================================================
 # Step 3 — 2DGS Train
 # ================================================================================================
-TWODGS_BASE="$OUTPUT_DIR/runs/mesh_2dgs"
+TWODGS_BASE="$OUTPUT_DIR/runs"
 TIMESTAMP=$(date +%m%d_%H%M%S)
-TWODGS_OUT="${TWODGS_BASE}/${EXPERIMENT_NAME}-${TIMESTAMP}"
+TWODGS_OUT="${TWODGS_BASE}/${EXPERIMENT_NAME}/${EXPERIMENT_NAME}-${TIMESTAMP}"
 
 # Check for completed training in previous runs, or find checkpoint to resume
 PREV_MESH=$(find "$TWODGS_BASE" -name "iteration_${TRAIN_ITERATIONS}" -type d 2>/dev/null | sort | tail -1 || true)
