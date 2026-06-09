@@ -430,12 +430,18 @@ print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
 
         # Export cleaned NuRec USDZ
         log "导出 NuRec USDZ ..."
-        python -m threedgrut.export.scripts.export_usd \
+        cd "$THREEDGRUT_DIR"
+        if python -m threedgrut.export.scripts.export_usd \
             --checkpoint "$CKPT_CLEAN" --output "$USDZ_FILE" --format nurec \
-            --no-transform --no-cameras --no-background 2>&1 | grep -E "created|successful|ERROR" && \
+            --no-transform --no-cameras --no-background 2>&1; then
             log "USDZ: $USDZ_FILE ($(du -h "$USDZ_FILE" | cut -f1))"
-            rm -f "$CKPT_CLEAN"
-            find "$TRAIN_OUTDIR" -maxdepth 1 -name "export_*.usdz" ! -name "scene_nurec.usdz" -delete 2>/dev/null || true
+        else
+            warn "NuRec 导出失败, 使用训练导出的 USDZ"
+            EXPORT_USDZ=$(find "$TRAIN_OUTDIR" -maxdepth 1 -name "export_*.usdz" -print -quit 2>/dev/null)
+            [ -n "$EXPORT_USDZ" ] && cp "$EXPORT_USDZ" "$USDZ_FILE" && log "USDZ: $USDZ_FILE (from training export)"
+        fi
+        rm -f "$CKPT_CLEAN"
+        find "$TRAIN_OUTDIR" -maxdepth 1 -name "export_*.usdz" ! -name "scene_nurec.usdz" -delete 2>/dev/null || true
     else
         warn "未找到 checkpoint, 跳过清理导出"
     fi
