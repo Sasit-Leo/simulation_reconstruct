@@ -5,7 +5,7 @@ set -euo pipefail
 
 VIDEO_PATH=""; OUTPUT_DIR=""; EXPERIMENT_NAME=""
 FPS=5; MAX_IMAGE_SIZE=1920; GPU_ID=0; TRAIN_ITERATIONS=60000; DOWNSAMPLE_FACTOR=2
-SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false
+SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false; SKIP_USDZ=false
 VISUAL_FILTER=false  # -V: interactive point cloud crop before training
 CONDA_ENV="vid2sim"; TWODGS_DIR="$(cd "$(dirname "$0")" && pwd)/2dgs"
 CULL_FACTOR=1.5   # IQR multiplier for spatial culling (larger = looser)
@@ -19,14 +19,14 @@ step() { echo -e "\n${BLUE}▶${NC} $(date '+%H:%M:%S') $*"; }
 
 usage() { head -32 "$0" | tail -16; exit 0; }
 
-while getopts "v:o:n:f:s:g:i:d:b:cSThV" opt; do
+while getopts "v:o:n:f:s:g:i:d:b:cSThVu" opt; do
     case $opt in
         v) VIDEO_PATH="$OPTARG" ;;  o) OUTPUT_DIR="$OPTARG" ;;
         n) EXPERIMENT_NAME="$OPTARG" ;; f) FPS="$OPTARG" ;;
         s) MAX_IMAGE_SIZE="$OPTARG" ;; g) GPU_ID="$OPTARG" ;;
         i) TRAIN_ITERATIONS="$OPTARG" ;; d) DOWNSAMPLE_FACTOR="$OPTARG" ;;
         b) CULL_FACTOR="$OPTARG" ;;
-        c) SKIP_FFMPEG=true ;;  S) SKIP_COLMAP=true ;;  T) SKIP_TRAINING=true ;;  V) VISUAL_FILTER=true ;;
+        c) SKIP_FFMPEG=true ;;  S) SKIP_COLMAP=true ;;  T) SKIP_TRAINING=true ;;  u) SKIP_USDZ=true ;;  V) VISUAL_FILTER=true ;;
         h) usage ;;  *) usage ;;
     esac
 done
@@ -693,9 +693,11 @@ json.dump({'verts': len(out_verts), 'faces': len(out_faces), 'watertight': is_wa
 " 2>&1 && log "  ◈ 几何优化完成"
 fi
 
+if [ "$SKIP_USDZ" = true ]; then
+    log "  ◈ 跳过 USDA 导出"
+elif [ -f "$MESH_OUT" ]; then
     log "  ◈ USDA 导出..."
 # PLY → USDA (Isaac Lab native format, with collision API)
-if [ -f "$MESH_OUT" ]; then
     USDA_MESH="${MESH_OUT%.ply}.usda"
     python -c "
 from pxr import Usd, UsdGeom, UsdPhysics
@@ -719,7 +721,7 @@ stage.GetRootLayer().Save()
 import os
 print(f'{os.path.getsize(\"$USDA_MESH\")/1024/1024:.0f} MB')
 " 2>&1 && log "USDA: $USDA_MESH"
-fi
+fi  # SKIP_USDZ
 
 # Cleanup intermediate files
 rm -f "$DATABASE_PATH" 2>/dev/null || true              # COLMAP DB (~2GB, no longer needed)
