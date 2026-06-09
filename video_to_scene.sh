@@ -9,7 +9,7 @@ set -euo pipefail
 VIDEO_PATH=""
 OUTPUT_DIR=""
 EXPERIMENT_NAME=""
-FPS=10
+FPS=5
 MAX_IMAGE_SIZE=1920
 GPU_ID=0
 TRAIN_ITERATIONS=60000
@@ -303,7 +303,7 @@ else
     set -o pipefail
     [ "$TRAIN_EXIT" -ne 0 ] && { err "训练异常退出 (exit $TRAIN_EXIT)"; exit 1; }
 
-    TRAIN_OUTDIR=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -maxdepth 2 -name "ckpt_last.pt" -type f -printf "%h\n" 2>/dev/null | sort | tail -1)
+    TRAIN_OUTDIR=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -maxdepth 2 -name "ckpt_last.pt" -type f -printf "%h\n" 2>/dev/null | sort | tail -1 || true)
     log "完成: $TRAIN_OUTDIR"
 fi
 
@@ -312,7 +312,7 @@ fi
 # ================================================================================================
 if [ "$SKIP_USDZ" = false ]; then
     step "Step 4/4: 清理 + USDZ 导出"
-    [ -z "${TRAIN_OUTDIR:-}" ] && TRAIN_OUTDIR=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -maxdepth 2 -name "ckpt_last.pt" -type f -printf "%h\n" 2>/dev/null | sort | tail -1)
+    [ -z "${TRAIN_OUTDIR:-}" ] && TRAIN_OUTDIR=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -maxdepth 2 -name "ckpt_last.pt" -type f -printf "%h\n" 2>/dev/null | sort | tail -1 || true)
     CKPT_SRC="${TRAIN_OUTDIR}/ckpt_last.pt"
     CKPT_CLEAN="${TRAIN_OUTDIR}/ckpt_clean.pt"
     USDZ_FILE="${TRAIN_OUTDIR}/scene_nurec.usdz"
@@ -513,7 +513,7 @@ ELAPSED_S=$((ELAPSED % 60))
     # Extract training time from log
     TRAIN_TIME=$(grep "training_time" "$RUNS_DIR/$EXPERIMENT_NAME/train.log" 2>/dev/null | grep -oP "[0-9]+\.[0-9]+" | head -1 | cut -d. -f1) || true
     [ -n "$TRAIN_TIME" ] && TRAIN_M=$((TRAIN_TIME / 60)) && TRAIN_S=$((TRAIN_TIME % 60))
-METRICS_JSON=$(find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "metrics.json" -type f 2>/dev/null | tail -1)
+METRICS_JSON=$(find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "metrics.json" -type f 2>/dev/null | tail -1 || true)
 if [ -f "$METRICS_JSON" ]; then
     PSNR=$(python -c "import json;d=json.load(open('$METRICS_JSON'));print(f\"{d['mean_psnr']:.1f}\")" 2>/dev/null)
     SSIM=$(python -c "import json;d=json.load(open('$METRICS_JSON'));print(f\"{d['mean_ssim']:.3f}\")" 2>/dev/null)
