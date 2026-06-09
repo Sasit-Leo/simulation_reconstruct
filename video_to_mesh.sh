@@ -422,7 +422,7 @@ fi
 # Step 4 — TSDF Mesh Extraction + Geometry Optimization + Export
 # ================================================================================================
 # Step 4 runs if training output exists (even if training was skipped via -T)
-TWODGS_ITER=$(find "$TWODGS_OUT/point_cloud" -name "iteration_*" -type d 2>/dev/null | sort | tail -1)
+TWODGS_ITER=$(find "$TWODGS_OUT/point_cloud" -name "iteration_*" -type d 2>/dev/null | sort | tail -1 || true)
 if [ -z "$TWODGS_ITER" ] && [ "$SKIP_TRAINING" = true ]; then
     step "Step 4/4: 跳过网格重建 (无训练输出)"
 elif [ -z "$TWODGS_ITER" ] && [ "$SKIP_TRAINING" != true ]; then
@@ -430,7 +430,7 @@ elif [ -z "$TWODGS_ITER" ] && [ "$SKIP_TRAINING" != true ]; then
 else
     step "Step 4/4: 网格重建 + 导出"
 
-TWODGS_ITER=$(find "$TWODGS_OUT/point_cloud" -name "iteration_*" -type d 2>/dev/null | sort | tail -1)
+TWODGS_ITER=$(find "$TWODGS_OUT/point_cloud" -name "iteration_*" -type d 2>/dev/null | sort | tail -1 || true)
 if [ -z "$TWODGS_ITER" ]; then
     TWODGS_ITER="$TWODGS_OUT"
     warn "未找到 2DGS iteration 目录，使用 $TWODGS_OUT"

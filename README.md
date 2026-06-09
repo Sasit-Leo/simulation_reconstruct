@@ -170,7 +170,7 @@ FFmpeg (4K原图) → CLAHE增强 → COLMAP SfM → [3DGUT | 2DGS] → 清理 +
 ```bash
 ./video_to_scene.sh -v video.mp4               # 全流程
 ./video_to_scene.sh -v video.mp4 -c -S          # 仅重训练
-./video_to_scene.sh -v video.mp4 -f 5           # 降 FPS（困难场景）
+./video_to_scene.sh -v video.mp4 -f 10          # 高帧率（精细重建）
 ```
 
 | 参数   | 说明                     | 默认                    |
@@ -178,7 +178,7 @@ FFmpeg (4K原图) → CLAHE增强 → COLMAP SfM → [3DGUT | 2DGS] → 清理 +
 | `-v` | 视频文件名或路径               | 优先 `videos/`          |
 | `-o` | 输出目录                   | `results/{视频名}_scene` |
 | `-f` | 抽帧 FPS                 | `5`                   |
-| `-i` | 训练迭代数                  | `30000`               |
+| `-i` | 训练迭代数                  | `60000`               |
 | `-d` | 训练下采样 (`1`=4K, `2`=2K) | `2` (24GB 推荐)         |
 | `-g` | GPU ID                 | `0`                   |
 | `-u` | 跳过 USDZ 导出             | 否                     |
@@ -217,8 +217,8 @@ ground = UsdFileCfg(usd_path=".../ground_collision.usda")    # 地面碰撞
 | ---- | ---------------------- | -------------------- |
 | `-v` | 视频文件名或路径               | 优先 `videos/`         |
 | `-o` | 输出目录                   | `results/{视频名}_mesh` |
-| `-f` | 抽帧 FPS                 | `10`                 |
-| `-i` | 训练迭代数                  | `30000`              |
+| `-f` | 抽帧 FPS                 | `5`                  |
+| `-i` | 训练迭代数                  | `60000`              |
 | `-d` | 训练下采样 (`1`=4K, `2`=2K) | `2` (24GB 推荐)        |
 | `-b` | 背景剔除系数                 | `1.5`                |
 | `-V` | 交互筛选点云                 | 否                    |
