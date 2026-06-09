@@ -293,6 +293,14 @@ TWODGS_BASE="$OUTPUT_DIR/runs/mesh_2dgs"
 TIMESTAMP=$(date +%m%d_%H%M%S)
 TWODGS_OUT="${TWODGS_BASE}/${EXPERIMENT_NAME}-${TIMESTAMP}"
 
+# Check for completed training in previous runs
+PREV_MESH=$(find "$TWODGS_BASE" -name "iteration_${TRAIN_ITERATIONS}" -type d 2>/dev/null | sort | tail -1 || true)
+if [ -n "$PREV_MESH" ]; then
+    SKIP_TRAINING=true
+    TWODGS_OUT=$(dirname "$(dirname "$PREV_MESH")")
+    log "发现已完成训练: $TWODGS_OUT，跳过训练"
+fi
+
 mkdir -p "$TWODGS_OUT"
 
 if [ "$SKIP_TRAINING" = true ]; then
