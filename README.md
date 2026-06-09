@@ -222,7 +222,11 @@ ground = UsdFileCfg(usd_path=".../ground_collision.usda")    # 地面碰撞
 | `-d` | 训练下采样 (`1`=4K, `2`=2K) | `2` (24GB 推荐)        |
 | `-b` | 背景剔除系数                 | `1.5`                |
 | `-V` | 交互筛选点云                 | 否                    |
+| `-u` | 跳过 USDA 导出             | 否                     |
 | `-g` | GPU ID                 | `0`                  |
+| `-c` | 跳过 FFmpeg              | 否                     |
+| `-S` | 跳过 COLMAP              | 否                     |
+| `-T` | 跳过训练                   | 否                     |
 
 输出结构：
 
