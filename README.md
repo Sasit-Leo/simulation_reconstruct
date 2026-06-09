@@ -9,9 +9,9 @@
 | 组件  | 要求                                           |
 | --- | -------------------------------------------- |
 | GPU | NVIDIA RTX 系列（4090 / 24 GB）                  |
-| 显存  | ≥ 16 GB（`-d 1` 全分辨率需 >24 GB，默认 `-d 2`） |
+| 显存  | ≥ 16 GB（`-d 1` 全分辨率需 >24 GB，默认 `-d 2`）       |
 | 内存  | ≥ 32 GB                                      |
-| 磁盘  | 单次重建 50-200 GB（含中间文件）                    |
+| 磁盘  | 单次重建 50-200 GB（含中间文件）                        |
 | 系统  | Ubuntu 22.04, CUDA 12.4, NVIDIA Driver ≥ 550 |
 
 ### 环境搭建
@@ -40,8 +40,8 @@ pip install --no-build-isolation \
 # 6. GPU 架构
 conda env config vars set -n vid2sim TORCH_CUDA_ARCH_LIST=8.9
 
-# 7. FFmpeg（系统级）
-# Ubuntu: sudo apt install ffmpeg
+# 7. FFmpeg
+sudo apt install ffmpeg
 ```
 
 ### 编译 COLMAP with CUDA
@@ -80,6 +80,7 @@ cmake --build build -j$(nproc) && cmake --install build
 3DGUT 有两个边界条件 bug 需要手动修复：
 
 **`threedgut_tracer/src/gutRenderer.cu`**（`numParticles=0` 时非法内存访问）：
+
 ```cpp
 // 在 "fetch total number of particle/tile intersections" 之前添加：
 if (numParticles == 0) {
@@ -88,6 +89,7 @@ if (numParticles == 0) {
 ```
 
 **`threedgrut/strategy/gs.py`**（空梯度 / 字典访问错误）：
+
 ```python
 # update_gradient_buffer 方法中：
 params_grad = self.model.positions.grad
@@ -101,7 +103,7 @@ intr = list(dataset.intrinsics.values())[0]  # 曾是 dataset.intrinsic[0]
 max_focal = torch.as_tensor(intr[0]['focal_length']).float().max()
 ```
 
-### 验证
+### 配置验证
 
 ```bash
 conda activate vid2sim
@@ -170,6 +172,9 @@ FFmpeg (4K原图) → CLAHE增强 → COLMAP SfM → [3DGUT | 2DGS] → 清理 +
 | `-d` | 训练下采样 (`1`=4K, `2`=2K) | `2` (24GB 推荐)         |
 | `-g` | GPU ID                 | `0`                   |
 | `-u` | 跳过 USDZ 导出             | 否                     |
+| `-c` | 跳过 FFmpeg              | 否                     |
+| `-S` | 跳过 COLMAP              | 否                     |
+| `-T` | 跳过训练                   | 否                     |
 
 输出结构：
 
@@ -208,13 +213,13 @@ ground = UsdFileCfg(usd_path=".../ground_collision.usda")    # 地面碰撞
 | `-f` | 抽帧 FPS                 | `5`                  |
 | `-i` | 训练迭代数                  | `60000`              |
 | `-d` | 训练下采样 (`1`=4K, `2`=2K) | `2` (24GB 推荐)        |
-| `-b` | 背景剔除系数                 | `1.5`                |
-| `-V` | 交互筛选点云                 | 否                    |
-| `-u` | 跳过 USDA 导出             | 否                     |
 | `-g` | GPU ID                 | `0`                  |
-| `-c` | 跳过 FFmpeg              | 否                     |
-| `-S` | 跳过 COLMAP              | 否                     |
-| `-T` | 跳过训练                   | 否                     |
+| `-V` | 交互筛选点云                 | 否                    |
+| `-b` | 背景剔除系数                 | `1.5`                |
+| `-u` | 跳过 USDA 导出             | 否                    |
+| `-c` | 跳过 FFmpeg              | 否                    |
+| `-S` | 跳过 COLMAP              | 否                    |
+| `-T` | 跳过训练                   | 否                    |
 
 输出结构：
 
