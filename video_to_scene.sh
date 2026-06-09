@@ -415,17 +415,17 @@ if best_normal is not None:
         ckpt['rotation'] = torch.from_numpy(np.stack([nw, nx, ny, nz], axis=1)).float()
         print('Floor normal Z={:.3f}, rotated {:.1f}deg to Z-up'.format(best_normal[2], angle))
         import json
-        json.dump({'R': R.tolist(), 'angle': angle, 'floor_z': float(np.percentile(pos_f[:,2], 5))},
-                  open('${TRAIN_OUTDIR}/rotation.json', 'w'))
+        json.dump({'method': '3dgut', 'transform': {'angle_deg': angle, 'floor_z': float(np.percentile(pos_f[:,2], 5)), 'ceiling_z': 0}},
+                  open('${TRAIN_OUTDIR}/reconstruction.json', 'w'))
     else:
         print('Floor already Z-aligned ({:.1f}deg)'.format(angle))
         import json
-        json.dump({'R': np.eye(3).tolist(), 'angle': 0.0, 'floor_z': float(np.percentile(pos_f[:,2], 5))},
-                  open('${TRAIN_OUTDIR}/rotation.json', 'w'))
+        json.dump({'method': '3dgut', 'transform': {'angle_deg': angle, 'floor_z': float(np.percentile(pos_f[:,2], 5)), 'ceiling_z': 0}},
+                  open('${TRAIN_OUTDIR}/reconstruction.json', 'w'))
 else:
     import json
-    json.dump({'R': np.eye(3).tolist(), 'angle': 0.0, 'floor_z': float(np.percentile(pos_f[:,2], 5))},
-              open('${TRAIN_OUTDIR}/rotation.json', 'w'))
+    json.dump({'method': '3dgut', 'transform': {'angle_deg': 0.0, 'floor_z': float(np.percentile(pos_f[:,2], 5)), 'ceiling_z': 0}},
+              open('${TRAIN_OUTDIR}/reconstruction.json', 'w'))
 
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
@@ -459,7 +459,7 @@ fi
 # Ground collision — same rotation as visual scene, read from rotation.json
 # ================================================================================================
 GROUND_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/ground_collision.usda"
-ROTATION_JSON="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/rotation.json"
+RECON_JSON="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/reconstruction.json"
 if [ -f "$SPARSE_DIR/0/points3D.bin" ] && [ ! -f "$GROUND_FILE" ]; then
     python -c "
 import struct, numpy as np, json
@@ -478,7 +478,7 @@ pts = np.array(pts)
 # Apply same rotation as visual scene (if rotation.json exists)
 R = np.eye(3)
 try:
-    rot_data = json.load(open('$ROTATION_JSON'))
+    rot_data = json.load(open('$RECON_JSON'))
     R = np.array(rot_data['R'])
 except: pass
 pts = (R @ pts.T).T
@@ -509,18 +509,35 @@ ELAPSED=$(( $(date +%s) - START_TIME ))
 ELAPSED_M=$((ELAPSED / 60))
 ELAPSED_S=$((ELAPSED % 60))
 
-# Extract training metrics
-    # Extract training time from log
-    TRAIN_TIME=$(grep "training_time" "$RUNS_DIR/$EXPERIMENT_NAME/train.log" 2>/dev/null | grep -oP "[0-9]+\.[0-9]+" | head -1 | cut -d. -f1) || true
-    [ -n "$TRAIN_TIME" ] && TRAIN_M=$((TRAIN_TIME / 60)) && TRAIN_S=$((TRAIN_TIME % 60))
-METRICS_JSON=$(find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "metrics.json" -type f 2>/dev/null | tail -1 || true)
-if [ -f "$METRICS_JSON" ]; then
-    PSNR=$(python -c "import json;d=json.load(open('$METRICS_JSON'));print(f\"{d['mean_psnr']:.1f}\")" 2>/dev/null)
-    SSIM=$(python -c "import json;d=json.load(open('$METRICS_JSON'));print(f\"{d['mean_ssim']:.3f}\")" 2>/dev/null)
-    LPIPS=$(python -c "import json;d=json.load(open('$METRICS_JSON'));print(f\"{d['mean_lpips']:.3f}\")" 2>/dev/null)
+# Merge metrics into reconstruction.json
+RECON_JSON="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/reconstruction.json"
+METRICS_FILE=$(find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "metrics.json" -type f 2>/dev/null | tail -1 || true)
+if [ -f "$METRICS_FILE" ] && [ -f "$RECON_JSON" ]; then
+    python -c "
+import json
+r = json.load(open('$RECON_JSON'))
+m = json.load(open('$METRICS_FILE'))
+r['quality'] = {'psnr': round(m['mean_psnr'],1), 'ssim': round(m['mean_ssim'],3), 'lpips': round(m['mean_lpips'],3)}
+r['colmap'] = {'registered': ${NUM_IMAGES_REG:-0}, 'total': $FRAME_COUNT}
+r['timing'] = {'elapsed_s': $ELAPSED}
+json.dump(r, open('$RECON_JSON', 'w'), indent=2)
+"
+    rm -f "$METRICS_FILE"
 fi
 
-    step "Pipeline 完成 (${ELAPSED_M}m ${ELAPSED_S}s)"
+# Cleanup: remove non-essential artifacts
+find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "train.log" -delete 2>/dev/null || true
+find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "parsed.yaml" -delete 2>/dev/null || true
+find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "events.out.*" -delete 2>/dev/null || true
+
+# Read metrics for summary
+if [ -f "$RECON_JSON" ]; then
+    PSNR=$(python -c "import json;d=json.load(open('$RECON_JSON'));print(d['quality']['psnr'])" 2>/dev/null || echo "")
+    SSIM=$(python -c "import json;d=json.load(open('$RECON_JSON'));print(d['quality']['ssim'])" 2>/dev/null || echo "")
+    LPIPS=$(python -c "import json;d=json.load(open('$RECON_JSON'));print(d['quality']['lpips'])" 2>/dev/null || echo "")
+fi
+
+step "Pipeline 完成 (${ELAPSED_M}m ${ELAPSED_S}s)"
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
@@ -530,9 +547,8 @@ printf "║  📐 COLMAP    %-4s 帧注册 ║\n" "${NUM_IMAGES_REG:-?}"
 [ -n "${SSIM:-}" ] && printf "║  🎯 SSIM      %-7s    ║\n" "$SSIM"
 [ -n "${LPIPS:-}" ] && printf "║  🎯 LPIPS     %-7s    ║\n" "$LPIPS"
 echo "╠══════════════════════════════════════════╣"
-[ -n "${TRAIN_M:-}" ] && printf "║  ⏱  训练      %-5s     ║\n" "${TRAIN_M}m${TRAIN_S}s"
 printf "║  ⏱  总耗时    %-5s     ║\n" "${ELAPSED_M}m${ELAPSED_S}s"
 echo "╚══════════════════════════════════════════╝"
 echo ""
-echo ""
+echo "输出: $RECON_JSON"
 echo "续跑: $0 -v '$VIDEO_PATH' -c -S"

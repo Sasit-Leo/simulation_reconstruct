@@ -686,10 +686,11 @@ clean_mesh = trimesh.Trimesh(vertices=out_verts, faces=out_faces)
 clean_mesh.export('$MESH_OUT')
 is_watertight = clean_mesh.is_watertight
 print(f'Output: {len(out_verts):,} verts, {len(out_faces):,} faces, watertight={is_watertight}')
-json.dump({'verts': len(out_verts), 'faces': len(out_faces), 'watertight': is_watertight,
-           'flat_pct': float(is_flat.mean()*100), 'detail_pct': float(is_detail.mean()*100),
-           'planes_smoothed': plane_pass},
-          open('${TWODGS_OUT}/mesh_metrics.json', 'w'))
+json.dump({'method': '2dgs', 'mesh': {
+    'vertices': len(out_verts), 'faces': len(out_faces), 'watertight': is_watertight,
+    'flat_pct': float(is_flat.mean()*100), 'detail_pct': float(is_detail.mean()*100),
+    'planes_smoothed': plane_pass}},
+    open('${TWODGS_OUT}/reconstruction.json', 'w'))
 " 2>&1 && log "  ◈ 几何优化完成"
 fi
 
@@ -737,14 +738,25 @@ ELAPSED=$(( $(date +%s) - START_TIME ))
 ELAPSED_M=$((ELAPSED / 60))
 ELAPSED_S=$((ELAPSED % 60))
 
-MESH_METRICS="${TWODGS_OUT}/mesh_metrics.json"
-if [ -f "$MESH_METRICS" ]; then
-    MESH_VERTS=$(python -c "import json;d=json.load(open('$MESH_METRICS'));print(f\"{d['verts']:,}\")" 2>/dev/null)
-    MESH_FACES=$(python -c "import json;d=json.load(open('$MESH_METRICS'));print(f\"{d['faces']:,}\")" 2>/dev/null)
-    MESH_WATER=$(python -c "import json;d=json.load(open('$MESH_METRICS'));print('是' if d['watertight'] else '否')" 2>/dev/null)
-    MESH_FLAT=$(python -c "import json;d=json.load(open('$MESH_METRICS'));print(f\"{d['flat_pct']:.0f}%\")" 2>/dev/null)
-    MESH_PLANES=$(python -c "import json;d=json.load(open('$MESH_METRICS'));print(d['planes_smoothed'])" 2>/dev/null)
+RECON_JSON="${TWODGS_OUT}/reconstruction.json"
+if [ -f "$RECON_JSON" ]; then
+    # Add colmap info + timing
+    python -c "
+import json
+r = json.load(open('$RECON_JSON'))
+r['colmap'] = {'registered': ${NUM_IMAGES_REG:-0}, 'total': $FRAME_COUNT}
+r['timing'] = {'elapsed_s': $ELAPSED}
+json.dump(r, open('$RECON_JSON', 'w'), indent=2)
+" 2>/dev/null
+    MESH_VERTS=$(python -c "import json;d=json.load(open('$RECON_JSON'));print(f\"{d['mesh']['vertices']:,}\")" 2>/dev/null)
+    MESH_FACES=$(python -c "import json;d=json.load(open('$RECON_JSON'));print(f\"{d['mesh']['faces']:,}\")" 2>/dev/null)
+    MESH_WATER=$(python -c "import json;d=json.load(open('$RECON_JSON'));print('是' if d['mesh']['watertight'] else '否')" 2>/dev/null)
+    MESH_FLAT=$(python -c "import json;d=json.load(open('$RECON_JSON'));print(f\"{d['mesh']['flat_pct']:.0f}%\")" 2>/dev/null)
+    MESH_PLANES=$(python -c "import json;d=json.load(open('$RECON_JSON'));print(d['mesh']['planes_smoothed'])" 2>/dev/null)
 fi
+
+# Cleanup
+find "$TWODGS_OUT" -name "train.log" -delete 2>/dev/null || true
 
 step "Pipeline 完成 (${ELAPSED_M}m ${ELAPSED_S}s)"
 

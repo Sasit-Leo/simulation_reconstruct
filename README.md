@@ -160,7 +160,6 @@ FFmpeg (4K原图) → CLAHE增强 → COLMAP SfM → [3DGUT | 2DGS] → 清理 +
 ```bash
 ./video_to_scene.sh -v video.mp4               # 全流程
 ./video_to_scene.sh -v video.mp4 -c -S          # 仅重训练
-./video_to_scene.sh -v video.mp4 -f 10          # 高帧率（精细重建）
 ```
 
 | 参数   | 说明                     | 默认                    |
@@ -182,10 +181,9 @@ FFmpeg (4K原图) → CLAHE增强 → COLMAP SfM → [3DGUT | 2DGS] → 清理 +
 results/<video>_scene/runs/<experiment>/<experiment>-MMDD_HHMMSS/
 ├── scene_nurec.usdz            # ★ 视觉场景 (Z-up 对齐)
 ├── ground_collision.usda       # ★ 地面碰撞体 (同坐标系)
-├── rotation.json               # 旋转变换记录
+├── reconstruction.json         # 变换+质量指标+元信息
 ├── ckpt_last.pt                # 模型 checkpoint (续训用)
-├── ours_*/                     # 各阶段 checkpoint (每 5000 步)
-└── metrics.json                # PSNR/SSIM/LPIPS
+└── ours_*/                     # 各阶段 checkpoint (每 10000 步)
 ```
 
 **Isaac Lab 导入**：
@@ -227,9 +225,8 @@ ground = UsdFileCfg(usd_path=".../ground_collision.usda")    # 地面碰撞
 results/<video>_mesh/runs/mesh_2dgs/<experiment>-MMDD_HHMMSS/
 ├── mesh_<video>.usda            # ★ 网格 (Z-up, 碰撞已集成, 底面已封闭)
 ├── mesh_<video>.ply             # PLY 网格
-├── mesh_metrics.json            # 网格质量指标
-├── ckpt_*.pt                    # 模型 checkpoint (每 5000 步)
-├── train.log                    # 训练日志
+├── reconstruction.json         # 网格指标+COLMAP信息+耗时
+├── ckpt_*.pt                    # 模型 checkpoint
 └── point_cloud/                 # 2DGS 模型
 ```
 
