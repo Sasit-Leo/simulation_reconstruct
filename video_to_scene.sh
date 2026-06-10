@@ -185,9 +185,10 @@ else
 
     [ ! -f "$DATABASE_PATH" ] && { err "特征提取失败"; exit 1; }
 
-    colmap vocab_tree_matcher \
+    colmap sequential_matcher \
         --database_path "$DATABASE_PATH" --FeatureMatching.use_gpu 1 --FeatureMatching.max_num_matches 65536 \
-        --SiftMatching.max_ratio 0.7 --SiftMatching.max_distance 0.5 --SiftMatching.cross_check 1 2>&1 | tail -2
+        --SiftMatching.max_ratio 0.7 --SiftMatching.max_distance 0.5 --SiftMatching.cross_check 1 \
+        --SequentialMatching.overlap 15 2>&1 | tail -2
 
     mkdir -p "$SPARSE_DIR"
 
@@ -272,7 +273,16 @@ else
         "path=$OUTPUT_DIR" "out_dir=$RUNS_DIR" "experiment_name=$EXPERIMENT_NAME"
         "dataset.downsample_factor=$DOWNSAMPLE_FACTOR"
         "n_iterations=$TRAIN_ITERATIONS" "scheduler.positions.max_steps=$TRAIN_ITERATIONS"
-        "num_workers=4"
+        "render.particle_radiance_sph_degree=4" \
+        "model.progressive_training.max_n_features=4" \
+        "model.progressive_training.increase_frequency=500" \
+        "optimizer.params.features_specular.lr=0.001" \
+        "loss.use_l2=true" "loss.lambda_l2=0.3" \
+        "strategy.density_decay.start_iteration=500" "strategy.density_decay.end_iteration=45000" \
+        "strategy.prune_scale.start_iteration=500" "strategy.prune_scale.end_iteration=30000" \
+        "strategy.prune_scale.frequency=500" "strategy.prune_scale.threshold=1.0" \
+        "post_processing.method=ppisp" "post_processing.n_distillation_steps=5000" \
+        "num_workers=4" \
         "export_usd.enabled=true" "export_usd.format=nurec" "export_usd.apply_normalizing_transform=false")
 
     # auto-resume: add resume flag for incomplete training

@@ -164,9 +164,10 @@ else
 
     [ ! -f "$DATABASE_PATH" ] && { err "特征提取失败"; exit 1; }
 
-    colmap vocab_tree_matcher \
+    colmap sequential_matcher \
         --database_path "$DATABASE_PATH" --FeatureMatching.use_gpu 1 --FeatureMatching.max_num_matches 65536 \
-        --SiftMatching.max_ratio 0.7 --SiftMatching.max_distance 0.5 --SiftMatching.cross_check 1 2>&1 | tail -2
+        --SiftMatching.max_ratio 0.7 --SiftMatching.max_distance 0.5 --SiftMatching.cross_check 1 \
+        --SequentialMatching.overlap 15 2>&1 | tail -2
 
     mkdir -p "$SPARSE_DIR"
 
