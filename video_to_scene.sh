@@ -12,7 +12,7 @@ EXPERIMENT_NAME=""
 FPS=5
 MAX_IMAGE_SIZE=1920
 GPU_ID=0
-TRAIN_ITERATIONS=60000
+TRAIN_ITERATIONS=45000
 DOWNSAMPLE_FACTOR=2
 SKIP_USDZ=false
 SKIP_FFMPEG=false
@@ -272,24 +272,8 @@ else
         "path=$OUTPUT_DIR" "out_dir=$RUNS_DIR" "experiment_name=$EXPERIMENT_NAME"
         "dataset.downsample_factor=$DOWNSAMPLE_FACTOR"
         "n_iterations=$TRAIN_ITERATIONS" "scheduler.positions.max_steps=$TRAIN_ITERATIONS"
-        "checkpoint.iterations=[10000,20000,30000,40000,50000,60000]" \
-        "render.particle_radiance_sph_degree=4" \
-        "model.progressive_training.max_n_features=4" \
-        "model.progressive_training.increase_frequency=500" \
-        "optimizer.params.features_specular.lr=0.001" \
-        "loss.use_l2=true" \
-        "loss.lambda_l2=0.3" \
-        "post_processing.method=ppisp" \
-        "post_processing.n_distillation_steps=5000" \
-        "strategy.density_decay.start_iteration=500" \
-        "strategy.density_decay.end_iteration=60000" \
-
-        "strategy.prune_scale.start_iteration=500" \
-        "strategy.prune_scale.end_iteration=30000" \
-        "strategy.prune_scale.frequency=500" \
-        "strategy.prune_scale.threshold=1.0" \
-        "num_workers=4")
-    [ "$SKIP_USDZ" = false ] && TRAIN_CMD+=("export_usd.enabled=true" "export_usd.format=nurec" "export_usd.apply_normalizing_transform=false")
+        "num_workers=4"
+        "export_usd.enabled=true" "export_usd.format=nurec" "export_usd.apply_normalizing_transform=false")
 
     # auto-resume: add resume flag for incomplete training
     if [ -n "$PREV_CKPT" ] && [ ! -d "$(dirname "$PREV_CKPT")/ours_${TRAIN_ITERATIONS}" ]; then
@@ -312,109 +296,17 @@ else
 fi
 
 # ================================================================================================
-# Step 4 — Clean Gaussians + Export USDZ
+# Step 4 — Copy training USDZ
 # ================================================================================================
 if [ "$SKIP_USDZ" = false ]; then
-    step "Step 4/4: 清理 + USDZ 导出"
+    step "Step 4/4: USDZ 导出"
     [ -z "${TRAIN_OUTDIR:-}" ] && TRAIN_OUTDIR=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -maxdepth 2 -name "ckpt_last.pt" -type f -printf "%h\n" 2>/dev/null | sort | tail -1 || true)
-    CKPT_SRC="${TRAIN_OUTDIR}/ckpt_last.pt"
-    CKPT_CLEAN="${TRAIN_OUTDIR}/ckpt_clean.pt"
-    USDZ_FILE="${TRAIN_OUTDIR}/scene_nurec.usdz"
-
-    if [ -f "$CKPT_SRC" ]; then
-        log "清理浮空高斯..."
-        python -c "
-import torch, numpy as np, json
-from sklearn.cluster import DBSCAN
-from collections import Counter
-from scipy.spatial import cKDTree
-
-ckpt = torch.load('$CKPT_SRC', map_location='cpu', weights_only=False)
-pos = ckpt['positions'].detach().numpy()
-density = ckpt['density'].detach().numpy().squeeze()
-scales = ckpt['scale'].detach().numpy()
-N = len(pos)
-
-# 1. Opacity filter
-opacity = 1/(1+np.exp(-density))
-keep = opacity >= 0.008
-
-# 2. Scale filter
-scale_norm = np.linalg.norm(scales, axis=1)
-keep &= scale_norm < np.nanmedian(scale_norm) * 3
-
-# 3. DBSCAN: keep largest connected component
-n_sample = min(N//10, 100000)
-rng = np.random.RandomState(42)
-idx = rng.choice(N, n_sample, replace=False)
-sample = pos[idx]
-cl = DBSCAN(eps=5.0, min_samples=30).fit(sample)
-ls = cl.labels_
-cnt = Counter(ls[ls>=0])
-if cnt:
-    largest = cnt.most_common(1)[0][0]
-    tree = cKDTree(sample)
-    _, nn = tree.query(pos, k=3)
-    fl = np.array([ls[nn[i][ls[nn[i]]>=0][0]] if np.any(ls[nn[i]]>=0) else -1 for i in range(N)])
-    keep &= fl == largest
-
-for k in ['positions','rotation','scale','density','features_albedo','features_specular']:
-    if k in ckpt: ckpt[k] = ckpt[k][keep]
-print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
-
-# PCA-based Z-up alignment: smallest-variance axis → world Z
-from sklearn.decomposition import PCA
-pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
-z_axis_world = np.array([0.0, 0.0, 1.0])
-height_axis = pca.components_[np.argmin(pca.explained_variance_)]  # smallest var = room height
-height_axis /= np.linalg.norm(height_axis)
-angle = np.degrees(np.arccos(np.clip(np.dot(height_axis, z_axis_world), -1, 1)))
-print(f'PCA height axis: [{height_axis[0]:.3f}, {height_axis[1]:.3f}, {height_axis[2]:.3f}], angle to Z: {angle:.1f}deg')
-if angle > 2:
-    v = np.cross(height_axis, z_axis_world); s = np.linalg.norm(v)
-    if s > 1e-8:
-        v /= s; c0 = np.dot(height_axis, z_axis_world)
-        vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
-        R = np.eye(3) + vx + vx @ vx * ((1-c0)/(s*s))
-        pos_f = ckpt['positions'].detach().numpy()
-        ckpt['positions'] = torch.from_numpy((R @ pos_f.T).T).float()
-        # Rotate quaternions
-        from scipy.spatial.transform import Rotation as Rot
-        q_R = Rot.from_matrix(R).as_quat()
-        rw, rx, ry, rz = q_R[3], q_R[0], q_R[1], q_R[2]
-        qo = ckpt['rotation'].detach().numpy()
-        ow, ox, oy, oz = qo[:,0], qo[:,1], qo[:,2], qo[:,3]
-        nw = rw*ow - rx*ox - ry*oy - rz*oz
-        nx = rw*ox + rx*ow + ry*oz - rz*oy
-        ny = rw*oy - rx*oz + ry*ow + rz*ox
-        nz = rw*oz + rx*oy - ry*ox + rz*ow
-        ckpt['rotation'] = torch.from_numpy(np.stack([nw, nx, ny, nz], axis=1)).float()
-        print(f'Rotated {angle:.1f}deg to Z-up')
-json.dump({'method': '3dgut'}, open('${TRAIN_OUTDIR}/reconstruction.json', 'w'))
-
-# Fix param types for NuRec export
-for k in list(ckpt.keys()):
-    if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
-        ckpt[k] = torch.nn.Parameter(ckpt[k])
-torch.save(ckpt, '$CKPT_CLEAN')
-" 2>&1 && log "清理完成: $CKPT_CLEAN"
-
-        # Export cleaned NuRec USDZ
-        log "导出 NuRec USDZ ..."
-        cd "$THREEDGRUT_DIR"
-        if python -m threedgrut.export.scripts.export_usd \
-            --checkpoint "$CKPT_CLEAN" --output "$USDZ_FILE" --format nurec \
-            --no-transform --no-cameras --no-background 2>&1; then
-            log "USDZ: $USDZ_FILE ($(du -h "$USDZ_FILE" | cut -f1))"
-        else
-            warn "NuRec 导出失败, 使用训练导出的 USDZ"
-            EXPORT_USDZ=$(find "$TRAIN_OUTDIR" -maxdepth 1 -name "export_*.usdz" -print -quit 2>/dev/null)
-            [ -n "$EXPORT_USDZ" ] && cp "$EXPORT_USDZ" "$USDZ_FILE" && log "USDZ: $USDZ_FILE (from training export)"
-        fi
-        rm -f "$CKPT_CLEAN"
-        # Note: do NOT delete export_*.usdz here — scene_nurec.usdz may be a copy of it
+    EXPORT_USDZ=$(find "$TRAIN_OUTDIR" -maxdepth 1 -name "export_*.usdz" -print -quit 2>/dev/null || true)
+    if [ -n "$EXPORT_USDZ" ]; then
+        cp "$EXPORT_USDZ" "${TRAIN_OUTDIR}/scene_nurec.usdz"
+        log "USDZ: ${TRAIN_OUTDIR}/scene_nurec.usdz ($(du -h "${TRAIN_OUTDIR}/scene_nurec.usdz" | cut -f1))"
     else
-        warn "未找到 checkpoint, 跳过清理导出"
+        warn "未找到训练导出的 USDZ"
     fi
 fi
 
@@ -464,32 +356,12 @@ ELAPSED=$(( $(date +%s) - START_TIME ))
 ELAPSED_M=$((ELAPSED / 60))
 ELAPSED_S=$((ELAPSED % 60))
 
-# Merge metrics into reconstruction.json
-RECON_JSON="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/reconstruction.json"
+# Read metrics directly
 METRICS_FILE=$(find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "metrics.json" -type f 2>/dev/null | tail -1 || true)
-if [ -f "$METRICS_FILE" ] && [ -f "$RECON_JSON" ]; then
-    python -c "
-import json
-r = json.load(open('$RECON_JSON'))
-m = json.load(open('$METRICS_FILE'))
-r['quality'] = {'psnr': round(m['mean_psnr'],1), 'ssim': round(m['mean_ssim'],3), 'lpips': round(m['mean_lpips'],3)}
-r['colmap'] = {'registered': ${NUM_IMAGES_REG:-0}, 'total': $FRAME_COUNT}
-r['timing'] = {'elapsed_s': $ELAPSED}
-json.dump(r, open('$RECON_JSON', 'w'), indent=2)
-"
-    rm -f "$METRICS_FILE"
-fi
-
-# Cleanup: remove non-essential artifacts
-find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "train.log" -delete 2>/dev/null || true
-find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "parsed.yaml" -delete 2>/dev/null || true
-find "${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}" -name "events.out.*" -delete 2>/dev/null || true
-
-# Read metrics for summary
-if [ -f "$RECON_JSON" ]; then
-    PSNR=$(python -c "import json;d=json.load(open('$RECON_JSON'));print(d['quality']['psnr'])" 2>/dev/null || echo "")
-    SSIM=$(python -c "import json;d=json.load(open('$RECON_JSON'));print(d['quality']['ssim'])" 2>/dev/null || echo "")
-    LPIPS=$(python -c "import json;d=json.load(open('$RECON_JSON'));print(d['quality']['lpips'])" 2>/dev/null || echo "")
+if [ -f "$METRICS_FILE" ]; then
+    PSNR=$(python -c "import json;d=json.load(open('$METRICS_FILE'));print(f\"{d['mean_psnr']:.1f}\")" 2>/dev/null || echo "")
+    SSIM=$(python -c "import json;d=json.load(open('$METRICS_FILE'));print(f\"{d['mean_ssim']:.3f}\")" 2>/dev/null || echo "")
+    LPIPS=$(python -c "import json;d=json.load(open('$METRICS_FILE'));print(f\"{d['mean_lpips']:.3f}\")" 2>/dev/null || echo "")
 fi
 
 step "Pipeline 完成 (${ELAPSED_M}m ${ELAPSED_S}s)"
@@ -505,5 +377,4 @@ echo "╠═══════════════════════�
 printf "║  ⏱  总耗时    %-5s     ║\n" "${ELAPSED_M}m${ELAPSED_S}s"
 echo "╚══════════════════════════════════════════╝"
 echo ""
-echo "输出: $RECON_JSON"
 echo "续跑: $0 -v '$VIDEO_PATH' -c -S"
