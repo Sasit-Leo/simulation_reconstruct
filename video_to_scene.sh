@@ -273,8 +273,8 @@ else
         "path=$OUTPUT_DIR" "out_dir=$RUNS_DIR" "experiment_name=$EXPERIMENT_NAME"
         "dataset.downsample_factor=$DOWNSAMPLE_FACTOR"
         "n_iterations=$TRAIN_ITERATIONS" "scheduler.positions.max_steps=$TRAIN_ITERATIONS"
-        "render.particle_radiance_sph_degree=5" \
-        "model.progressive_training.max_n_features=5" \
+        "render.particle_radiance_sph_degree=4" \
+        "model.progressive_training.max_n_features=4" \
         "model.progressive_training.increase_frequency=500" \
         "optimizer.params.features_specular.lr=0.001" \
         "loss.use_l2=true" "loss.lambda_l2=0.3" \
