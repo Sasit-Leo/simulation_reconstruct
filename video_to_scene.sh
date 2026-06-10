@@ -362,7 +362,34 @@ for k in ['positions','rotation','scale','density','features_albedo','features_s
     if k in ckpt: ckpt[k] = ckpt[k][keep]
 print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
 
-# Write metadata (no auto-rotation — preserve original coordinate frame)
+# PCA-based Z-up alignment: smallest-variance axis → world Z
+from sklearn.decomposition import PCA
+pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
+z_axis_world = np.array([0.0, 0.0, 1.0])
+height_axis = pca.components_[np.argmin(pca.explained_variance_)]  # smallest var = room height
+height_axis /= np.linalg.norm(height_axis)
+angle = np.degrees(np.arccos(np.clip(np.dot(height_axis, z_axis_world), -1, 1)))
+print(f'PCA height axis: [{height_axis[0]:.3f}, {height_axis[1]:.3f}, {height_axis[2]:.3f}], angle to Z: {angle:.1f}deg')
+if angle > 2:
+    v = np.cross(height_axis, z_axis_world); s = np.linalg.norm(v)
+    if s > 1e-8:
+        v /= s; c0 = np.dot(height_axis, z_axis_world)
+        vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
+        R = np.eye(3) + vx + vx @ vx * ((1-c0)/(s*s))
+        pos_f = ckpt['positions'].detach().numpy()
+        ckpt['positions'] = torch.from_numpy((R @ pos_f.T).T).float()
+        # Rotate quaternions
+        from scipy.spatial.transform import Rotation as Rot
+        q_R = Rot.from_matrix(R).as_quat()
+        rw, rx, ry, rz = q_R[3], q_R[0], q_R[1], q_R[2]
+        qo = ckpt['rotation'].detach().numpy()
+        ow, ox, oy, oz = qo[:,0], qo[:,1], qo[:,2], qo[:,3]
+        nw = rw*ow - rx*ox - ry*oy - rz*oz
+        nx = rw*ox + rx*ow + ry*oz - rz*oy
+        ny = rw*oy - rx*oz + ry*ow + rz*ox
+        nz = rw*oz + rx*oy - ry*ox + rz*ow
+        ckpt['rotation'] = torch.from_numpy(np.stack([nw, nx, ny, nz], axis=1)).float()
+        print(f'Rotated {angle:.1f}deg to Z-up')
 json.dump({'method': '3dgut'}, open('${TRAIN_OUTDIR}/reconstruction.json', 'w'))
 
 # Fix param types for NuRec export
