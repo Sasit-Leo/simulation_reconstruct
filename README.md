@@ -171,7 +171,7 @@ FFmpeg (4K原图) → CLAHE增强 → COLMAP SfM → [3DGUT | 2DGS] → 清理 +
 | `-d` | 训练下采样 (`1`=4K, `2`=2K) | `2` (24GB 推荐)         |
 | `-g` | GPU ID                 | `0`                   |
 | `-u` | 跳过 USDZ 导出             | 否                     |
-| `-A` | 跳过 CLAHE 增强           | 否                     |
+| `-A` | 启用 CLAHE 增强           | 否                     |
 | `-c` | 跳过 FFmpeg              | 否                     |
 | `-S` | 跳过 COLMAP              | 否                     |
 | `-T` | 跳过训练                   | 否                     |

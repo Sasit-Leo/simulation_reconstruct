@@ -5,7 +5,7 @@ set -euo pipefail
 
 VIDEO_PATH=""; OUTPUT_DIR=""; EXPERIMENT_NAME=""
 FPS=5; MAX_IMAGE_SIZE=1920; GPU_ID=0; TRAIN_ITERATIONS=60000; DOWNSAMPLE_FACTOR=2
-SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false; SKIP_USDZ=false; SKIP_CLAHE=false
+SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false; SKIP_USDZ=false; SKIP_CLAHE=true
 VISUAL_FILTER=false  # -V: interactive point cloud crop before training
 CONDA_ENV="vid2sim"; TWODGS_DIR="$(cd "$(dirname "$0")" && pwd)/2dgs"
 CULL_FACTOR=1.5   # IQR multiplier for spatial culling (larger = looser)
@@ -26,7 +26,7 @@ while getopts "v:o:n:f:s:g:i:d:b:AcSThVu" opt; do
         s) MAX_IMAGE_SIZE="$OPTARG" ;; g) GPU_ID="$OPTARG" ;;
         i) TRAIN_ITERATIONS="$OPTARG" ;; d) DOWNSAMPLE_FACTOR="$OPTARG" ;;
         b) CULL_FACTOR="$OPTARG" ;;
-        c) SKIP_FFMPEG=true ;;  A) SKIP_CLAHE=true ;;  S) SKIP_COLMAP=true ;;  T) SKIP_TRAINING=true ;;  u) SKIP_USDZ=true ;;  V) VISUAL_FILTER=true ;;
+        c) SKIP_FFMPEG=true ;;  A) SKIP_CLAHE=false ;;  S) SKIP_COLMAP=true ;;  T) SKIP_TRAINING=true ;;  u) SKIP_USDZ=true ;;  V) VISUAL_FILTER=true ;;
         h) usage ;;  *) usage ;;
     esac
 done

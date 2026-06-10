@@ -18,7 +18,7 @@ SKIP_USDZ=false
 SKIP_FFMPEG=false
 SKIP_COLMAP=false
 SKIP_TRAINING=false
-SKIP_CLAHE=false
+SKIP_CLAHE=true
 
 CONDA_ENV="vid2sim"
 THREEDGRUT_DIR="$(cd "$(dirname "$0")" && pwd)/3dgrut"
@@ -37,7 +37,7 @@ while getopts "v:o:n:f:s:g:i:d:uAcSTh" opt; do
         n) EXPERIMENT_NAME="$OPTARG" ;; f) FPS="$OPTARG" ;;
         s) MAX_IMAGE_SIZE="$OPTARG" ;; g) GPU_ID="$OPTARG" ;;
         i) TRAIN_ITERATIONS="$OPTARG" ;; d) DOWNSAMPLE_FACTOR="$OPTARG" ;;
-        u) SKIP_USDZ=true ;;  A) SKIP_CLAHE=true ;;  c) SKIP_FFMPEG=true ;;
+        u) SKIP_USDZ=true ;;  A) SKIP_CLAHE=false ;;  c) SKIP_FFMPEG=true ;;
         S) SKIP_COLMAP=true ;; T) SKIP_TRAINING=true ;;  h) usage ;;  *) usage ;;
     esac
 done
