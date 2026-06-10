@@ -159,7 +159,7 @@ else
         --ImageReader.camera_model SIMPLE_RADIAL --ImageReader.single_camera 1 \
         --FeatureExtraction.use_gpu 1 --SiftExtraction.max_image_size "$MAX_IMAGE_SIZE" \
         --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.002 \
-        --SiftExtraction.edge_threshold 5 --SiftExtraction.num_octaves 5 --SiftExtraction.estimate_affine_shape 0 \
+        --SiftExtraction.edge_threshold 10 --SiftExtraction.num_octaves 5 --SiftExtraction.estimate_affine_shape 1 \
         --SiftExtraction.domain_size_pooling 0 2>&1 | tail -2
 
     [ ! -f "$DATABASE_PATH" ] && { err "特征提取失败"; exit 1; }
