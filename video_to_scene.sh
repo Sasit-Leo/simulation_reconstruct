@@ -352,7 +352,7 @@ keep &= (z >= z05) & (z <= z98)
 n_sample = min(N//10, 100000)
 idx = np.random.choice(N, n_sample, replace=False)
 sample = pos[idx]
-cl = DBSCAN(eps=1.0, min_samples=30).fit(sample)
+cl = DBSCAN(eps=5.0, min_samples=30).fit(sample)
 ls = cl.labels_
 cnt = Counter(ls[ls>=0])
 if cnt:
