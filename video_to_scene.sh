@@ -324,7 +324,7 @@ if [ "$SKIP_USDZ" = false ]; then
     if [ -f "$CKPT_SRC" ]; then
         log "清理浮空高斯..."
         python -c "
-import torch, numpy as np, struct
+import torch, numpy as np, json
 from sklearn.cluster import DBSCAN
 from collections import Counter
 from scipy.spatial import cKDTree
@@ -335,22 +335,18 @@ density = ckpt['density'].detach().numpy().squeeze()
 scales = ckpt['scale'].detach().numpy()
 N = len(pos)
 
-# 1. Opacity filter: remove nearly invisible Gaussians
+# 1. Opacity filter
 opacity = 1/(1+np.exp(-density))
 keep = opacity >= 0.008
 
-# 2. Scale filter: remove extremely stretched Gaussians
+# 2. Scale filter
 scale_norm = np.linalg.norm(scales, axis=1)
-keep &= scale_norm < np.median(scale_norm) * 3
+keep &= scale_norm < np.nanmedian(scale_norm) * 3
 
-# 3. Z-range: remove ceiling/underground floaters
-z = pos[:,2]
-z05, z98 = np.percentile(z, 5), np.percentile(z, 98)
-keep &= (z >= z05) & (z <= z98)
-
-# 4. DBSCAN spatial clustering: keep largest connected component
+# 3. DBSCAN: keep largest connected component
 n_sample = min(N//10, 100000)
-idx = np.random.choice(N, n_sample, replace=False)
+rng = np.random.RandomState(42)
+idx = rng.choice(N, n_sample, replace=False)
 sample = pos[idx]
 cl = DBSCAN(eps=5.0, min_samples=30).fit(sample)
 ls = cl.labels_
@@ -364,78 +360,16 @@ if cnt:
 
 for k in ['positions','rotation','scale','density','features_albedo','features_specular']:
     if k in ckpt: ckpt[k] = ckpt[k][keep]
-pos_f = ckpt['positions'].detach().numpy()
+print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
 
-# 5. Z-axis alignment: rotate Gaussians to make floor Z-up
-from sklearn.linear_model import RANSACRegressor
-from scipy.spatial import ConvexHull
+# Write metadata (no auto-rotation — preserve original coordinate frame)
+json.dump({'method': '3dgut'}, open('${TRAIN_OUTDIR}/reconstruction.json', 'w'))
 
-# Read COLMAP points and find largest plane → floor normal
-cpts = []
-with open('$SPARSE_DIR/0/points3D.bin', 'rb') as f:
-    cn = struct.unpack('<Q', f.read(8))[0]
-    for _ in range(cn):
-        d = f.read(43); cx,cy,cz = struct.unpack_from('<ddd', d, 8)
-        cpts.append([cx,cy,cz])
-        tl = struct.unpack('<Q', f.read(8))[0]; f.seek(tl * 8, 1)
-cpts = np.array(cpts)
-
-best_area, best_normal = 0, None
-crem = np.ones(len(cpts), dtype=bool)
-for _ in range(5):
-    if crem.sum() < 100: break
-    cp = cpts[crem]
-    rr = RANSACRegressor(residual_threshold=0.2, max_trials=500)
-    rr.fit(np.column_stack([cp[:,0], cp[:,1]]), cp[:,2])
-    aa,bb = rr.estimator_.coef_
-    nrm = np.array([-aa, -bb, 1.0]); nrm /= np.linalg.norm(nrm)
-    inl = rr.inlier_mask_
-    crem[crem] = ~inl
-    cpi = cp[inl]
-    if len(cpi) > 50:
-        try:
-            area = ConvexHull(cpi[:, :2]).volume
-            if area > best_area: best_area, best_normal = area, nrm
-        except: pass
-
-if best_normal is not None:
-    angle = np.degrees(np.arccos(np.clip(np.dot(best_normal, [0,0,1]), -1, 1)))
-    if angle > 2:
-        v = np.cross(best_normal, [0,0,1]); s = np.linalg.norm(v)
-        v = v / s; c0 = np.dot(best_normal, [0,0,1])
-        vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
-        R = np.eye(3) + vx + vx @ vx * ((1-c0)/(s*s))
-        ckpt['positions'] = torch.from_numpy((R @ pos_f.T).T).float()
-        # Transform rotation quaternions via numpy: q' = q_R * q (wxyz format)
-        from scipy.spatial.transform import Rotation as Rot
-        q_R = Rot.from_matrix(R).as_quat()  # scipy: [x,y,z,w]
-        rw, rx, ry, rz = q_R[3], q_R[0], q_R[1], q_R[2]  # → wxyz
-        qo = ckpt['rotation'].detach().numpy()  # [N,4] wxyz
-        ow, ox, oy, oz = qo[:,0], qo[:,1], qo[:,2], qo[:,3]
-        nw = rw*ow - rx*ox - ry*oy - rz*oz
-        nx = rw*ox + rx*ow + ry*oz - rz*oy
-        ny = rw*oy - rx*oz + ry*ow + rz*ox
-        nz = rw*oz + rx*oy - ry*ox + rz*ow
-        ckpt['rotation'] = torch.from_numpy(np.stack([nw, nx, ny, nz], axis=1)).float()
-        print('Floor normal Z={:.3f}, rotated {:.1f}deg to Z-up'.format(best_normal[2], angle))
-        import json
-        json.dump({'method': '3dgut', 'transform': {'angle_deg': angle, 'floor_z': float(np.percentile(pos_f[:,2], 5)), 'ceiling_z': 0}},
-                  open('${TRAIN_OUTDIR}/reconstruction.json', 'w'))
-    else:
-        print('Floor already Z-aligned ({:.1f}deg)'.format(angle))
-        import json
-        json.dump({'method': '3dgut', 'transform': {'angle_deg': angle, 'floor_z': float(np.percentile(pos_f[:,2], 5)), 'ceiling_z': 0}},
-                  open('${TRAIN_OUTDIR}/reconstruction.json', 'w'))
-else:
-    import json
-    json.dump({'method': '3dgut', 'transform': {'angle_deg': 0.0, 'floor_z': float(np.percentile(pos_f[:,2], 5)), 'ceiling_z': 0}},
-              open('${TRAIN_OUTDIR}/reconstruction.json', 'w'))
-
+# Fix param types for NuRec export
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
         ckpt[k] = torch.nn.Parameter(ckpt[k])
 torch.save(ckpt, '$CKPT_CLEAN')
-print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
 " 2>&1 && log "清理完成: $CKPT_CLEAN"
 
         # Export cleaned NuRec USDZ
@@ -460,13 +394,12 @@ fi
 # ================================================================================================
 
 # ================================================================================================
-# Ground collision — same rotation as visual scene, read from rotation.json
+# Ground collision — bounding box in original coordinate frame
 # ================================================================================================
 GROUND_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/ground_collision.usda"
-RECON_JSON="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/reconstruction.json"
 if [ -f "$SPARSE_DIR/0/points3D.bin" ] && [ ! -f "$GROUND_FILE" ]; then
     python -c "
-import struct, numpy as np, json
+import struct, numpy as np
 from pxr import Usd, UsdGeom, UsdPhysics, Gf
 
 path = '$SPARSE_DIR/0/points3D.bin'
@@ -479,19 +412,10 @@ with open(path, 'rb') as f:
         track_len = struct.unpack('<Q', f.read(8))[0]; f.seek(track_len * 8, 1)
 pts = np.array(pts)
 
-# Apply same rotation as visual scene (if rotation.json exists)
-R = np.eye(3)
-try:
-    rot_data = json.load(open('$RECON_JSON'))
-    R = np.array(rot_data['R'])
-except: pass
-pts = (R @ pts.T).T
-
-zs = np.sort(pts[:,2])
-floor_z = zs[len(zs)//20]
-ceiling_z = zs[-len(zs)//20]
+# Use COLMAP points directly (no rotation)
 xmin, xmax = np.percentile(pts[:,0], 5), np.percentile(pts[:,0], 95)
 ymin, ymax = np.percentile(pts[:,1], 5), np.percentile(pts[:,1], 95)
+zmin, zmax = np.percentile(pts[:,2], 5), np.percentile(pts[:,2], 95)
 cx = (xmin + xmax) / 2; cy = (ymin + ymax) / 2
 w = (xmax - xmin) + 4.0; d = (ymax - ymin) + 4.0
 
@@ -499,12 +423,12 @@ stage = Usd.Stage.CreateNew('$GROUND_FILE')
 UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
 ground = UsdGeom.Cube.Define(stage, '/World/ground')
 ground.AddScaleOp().Set(Gf.Vec3f(w/2, d/2, 0.02))
-ground.AddTranslateOp().Set(Gf.Vec3f(cx, cy, floor_z))
+ground.AddTranslateOp().Set(Gf.Vec3f(cx, cy, zmin))
 UsdPhysics.CollisionAPI.Apply(ground.GetPrim())
 body = UsdPhysics.RigidBodyAPI.Apply(ground.GetPrim())
 body.CreateKinematicEnabledAttr().Set(True)
 stage.GetRootLayer().Save()
-print('Floor Z={:.2f}  Room H={:.1f}m  Ground={:.1f}x{:.1f}m'.format(floor_z, ceiling_z-floor_z, w, d))
+print(f'Ground: {w:.1f}x{d:.1f}m at Z={zmin:.2f}')
 " 2>&1 && log "地面碰撞: $GROUND_FILE"
 fi
 # Done
