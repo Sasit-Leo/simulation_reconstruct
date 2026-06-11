@@ -419,20 +419,13 @@ torch.save(ckpt, '$CKPT_CLEAN')
 
         # Combined scene referencing all outputs (load this one file)
         python -c "
-with open('${TRAIN_OUTDIR}/scene_combined.usda', 'w') as f:
-    f.write('''#usda 1.0
-(
-    defaultPrim = \"World\"
-    metersPerUnit = 1.0
-    upAxis = \"Z\"
-)
-def Xform \"World\"
-{
-    def \"gaussians\" (references = @./scene_nurec.usdz@) { }
-    def \"mesh_fill\" (references = @./scene_mesh.usda@) { }
-    def \"ground\" (references = @./ground_collision.usda@) { }
-}
-''')
+python -c "
+from pxr import Usd
+stage = Usd.Stage.CreateNew('${TRAIN_OUTDIR}/scene_combined.usda')
+stage.GetRootLayer().subLayerPaths = ['./scene_nurec.usdz', './scene_mesh.usda', './ground_collision.usda']
+stage.SetDefaultPrim(stage.DefinePrim('/World', 'Xform'))
+stage.GetRootLayer().Save()
+"
 " 2>&1
         log "组合场景: ${TRAIN_OUTDIR}/scene_combined.usda"
 
