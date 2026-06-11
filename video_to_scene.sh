@@ -382,18 +382,18 @@ if angle > 2:
             rw*ow-rx*ox-ry*oy-rz*oz, rw*ox+rx*ow+ry*oz-rz*oy,
             rw*oy-rx*oz+ry*ow+rz*ox, rw*oz+rx*oy-ry*ox+rz*ow], axis=1)).float()
         print(f'Rotated {angle:.1f}deg to Z-up')
-        # Check if upside-down: densest region should be near Z=0 (floor), not at top
+        # Deterministic orientation: floor (more Gaussians) should be at low Z
         p = ckpt['positions'].detach().numpy()
-        z_median = np.median(p[:,2])
-        if z_median > p[:,2].max() * 0.5:
-            # Flip 180 around X axis
+        z_mid = (p[:,2].min() + p[:,2].max()) / 2
+        below = (p[:,2] < z_mid).sum()
+        above = (p[:,2] > z_mid).sum()
+        if above > below:
             flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
             ckpt['positions'] = torch.from_numpy((flip @ p.T).T).float()
             qo = ckpt['rotation'].detach().numpy()
-            # 180deg around X: q_R = (0,1,0,0) in wxyz, q' = q_R ⊗ q
             nw = -qo[:,1]; nx = qo[:,0]; ny = -qo[:,3]; nz = qo[:,2]
             ckpt['rotation'] = torch.from_numpy(np.stack([nw, nx, ny, nz], axis=1)).float()
-            print(f'Flipped upright (median Z was {z_median:.1f})')
+            print(f'Flipped upright (below={below}, above={above})')
 else:
     print('Already Z-aligned')
 
@@ -409,7 +409,10 @@ torch.save(ckpt, '$CKPT_CLEAN')
             --checkpoint "$CKPT_CLEAN" --output "$USDZ_FILE" --format nurec \
             --no-transform --no-cameras --no-background 2>&1 | tail -2
         [ -f "$USDZ_FILE" ] && log "USDZ: $USDZ_FILE ($(du -h "$USDZ_FILE" | cut -f1))"
-        rm -f "$CKPT_CLEAN"
+        rm -f "$CKPT_CLEAN" "$CKPT_SRC"
+        find "$TRAIN_OUTDIR" -name "export_*.usdz" ! -name "scene_nurec.usdz" -delete 2>/dev/null || true
+        find "$TRAIN_OUTDIR" -name "ours_*" -type d -exec rm -rf {} + 2>/dev/null || true
+        find "$TRAIN_OUTDIR" -name "parsed.yaml" -o -name "events.out.*" -o -name "train.log" -delete 2>/dev/null || true
     else
         warn "未找到 checkpoint"
     fi
