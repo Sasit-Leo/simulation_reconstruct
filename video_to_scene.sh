@@ -257,7 +257,7 @@ RUNS_DIR="$OUTPUT_DIR/runs"
 
 # Check for completed checkpoint before deciding to train
 PREV_CKPT=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -name "ckpt_last.pt" -type f 2>/dev/null | sort | tail -1 || true)
-if [ -n "$PREV_CKPT" ] && [ -d "$(dirname "$PREV_CKPT")/ours_${TRAIN_ITERATIONS}" ]; then
+if [ -n "$PREV_CKPT" ]; then
     SKIP_TRAINING=true
     log "发现已完成 checkpoint，自动跳过训练"
 fi
@@ -410,9 +410,8 @@ torch.save(ckpt, '$CKPT_CLEAN')
             --checkpoint "$CKPT_CLEAN" --output "$USDZ_FILE" --format nurec \
             --no-transform --no-cameras --no-background 2>&1 | tail -2
         [ -f "$USDZ_FILE" ] && log "USDZ: $USDZ_FILE ($(du -h "$USDZ_FILE" | cut -f1))"
-        rm -f "$CKPT_CLEAN" "$CKPT_SRC"
+        rm -f "$CKPT_CLEAN"
         find "$TRAIN_OUTDIR" -name "export_*.usdz" ! -name "scene_nurec.usdz" -delete 2>/dev/null || true
-        find "$TRAIN_OUTDIR" -name "ours_*" -type d -exec rm -rf {} + 2>/dev/null || true
         find "$TRAIN_OUTDIR" \( -name "parsed.yaml" -o -name "events.out.*" -o -name "train.log" -o -name "metrics.json" \) -delete 2>/dev/null || true
         rm -rf "$TRAIN_OUTDIR/ppisp_report" 2>/dev/null || true
     else
