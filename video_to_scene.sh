@@ -382,18 +382,19 @@ if angle > 2:
             rw*ow-rx*ox-ry*oy-rz*oz, rw*ox+rx*ow+ry*oz-rz*oy,
             rw*oy-rx*oz+ry*ow+rz*ox, rw*oz+rx*oy-ry*ox+rz*ow], axis=1)).float()
         print(f'Rotated {angle:.1f}deg to Z-up')
-        # Deterministic orientation: floor (more Gaussians) should be at low Z
+        # Floor should be denser (more Gaussians) than ceiling
         p = ckpt['positions'].detach().numpy()
-        z_mid = (p[:,2].min() + p[:,2].max()) / 2
-        below = (p[:,2] < z_mid).sum()
-        above = (p[:,2] > z_mid).sum()
-        if above > below:
+        z_lo = np.percentile(p[:,2], 10)
+        z_hi = np.percentile(p[:,2], 90)
+        bot_density = ((p[:,2] >= z_lo) & (p[:,2] < z_lo + (z_hi-z_lo)*0.2)).sum()
+        top_density = ((p[:,2] > z_hi - (z_hi-z_lo)*0.2) & (p[:,2] <= z_hi)).sum()
+        if top_density > bot_density:
             flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
             ckpt['positions'] = torch.from_numpy((flip @ p.T).T).float()
             qo = ckpt['rotation'].detach().numpy()
             nw = -qo[:,1]; nx = qo[:,0]; ny = -qo[:,3]; nz = qo[:,2]
             ckpt['rotation'] = torch.from_numpy(np.stack([nw, nx, ny, nz], axis=1)).float()
-            print(f'Flipped upright (below={below}, above={above})')
+            print(f'Flipped upright (top={top_density} > bot={bot_density})')
 else:
     print('Already Z-aligned')
 
@@ -412,7 +413,8 @@ torch.save(ckpt, '$CKPT_CLEAN')
         rm -f "$CKPT_CLEAN" "$CKPT_SRC"
         find "$TRAIN_OUTDIR" -name "export_*.usdz" ! -name "scene_nurec.usdz" -delete 2>/dev/null || true
         find "$TRAIN_OUTDIR" -name "ours_*" -type d -exec rm -rf {} + 2>/dev/null || true
-        find "$TRAIN_OUTDIR" -name "parsed.yaml" -o -name "events.out.*" -o -name "train.log" -delete 2>/dev/null || true
+        find "$TRAIN_OUTDIR" \( -name "parsed.yaml" -o -name "events.out.*" -o -name "train.log" -o -name "metrics.json" \) -delete 2>/dev/null || true
+        rm -rf "$TRAIN_OUTDIR/ppisp_report" 2>/dev/null || true
     else
         warn "未找到 checkpoint"
     fi
