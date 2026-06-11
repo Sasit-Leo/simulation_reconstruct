@@ -251,6 +251,138 @@ print(best_dir.rstrip('/') if best_n > 0 else '')
 fi
 
 # ================================================================================================
+# Manhattan alignment — rotate sparse model so walls align with axes
+# ================================================================================================
+MANHATTAN_FLAG="${SPARSE_DIR}/0/.manhattan_aligned"
+if [ ! -f "$MANHATTAN_FLAG" ]; then
+    log "Manhattan 对齐 (矩形房间先验)..."
+    python -c "
+import struct, numpy as np, json
+from sklearn.decomposition import PCA
+from sklearn.linear_model import RANSACRegressor
+
+SPARSE = '$SPARSE_DIR'
+
+# Read 3D points
+pts = []
+with open(f'{SPARSE}/0/points3D.bin', 'rb') as f:
+    n = struct.unpack('<Q', f.read(8))[0]
+    for _ in range(n):
+        pid = struct.unpack('<Q', f.read(8))[0]
+        x,y,z = struct.unpack('<ddd', f.read(24))
+        r,g,b = struct.unpack('<BBB', f.read(3))
+        err = struct.unpack('<d', f.read(8))[0]
+        tl = struct.unpack('<Q', f.read(8))[0]; f.read(tl * 8)
+        pts.append((x,y,z))
+pts = np.array(pts)
+print(f'Points: {len(pts):,}')
+
+# Find 3 dominant orthogonal planes via PCA
+# For a rectangular room, the point normals cluster in 3 orthogonal directions
+pca = PCA(n_components=3).fit(pts)
+comps = pca.components_.copy()
+var = pca.explained_variance_.copy()
+
+# The 3 PCA components = wall/floor normals (orthogonal for rectangular room)
+# Height = smallest variance → Z
+# Longest wall = largest variance → X
+# Second wall = middle variance → Y
+order = np.argsort(var)  # [smallest, middle, largest]
+z_axis = comps[order[0]].copy()  # height/floor normal
+y_axis = comps[order[1]].copy()  # second wall normal
+x_axis = comps[order[2]].copy()  # longest wall normal
+
+# Ensure right-handed coordinate system
+z_axis /= np.linalg.norm(z_axis)
+y_axis /= np.linalg.norm(y_axis)
+x_axis /= np.linalg.norm(x_axis)
+# Fix: make sure Z points upward (more points with positive Z projection)
+if np.dot(pts.mean(axis=0), z_axis) < 0: z_axis = -z_axis
+if np.dot(pts.mean(axis=0), x_axis) < 0: x_axis = -x_axis
+# Recompute Y to ensure orthogonality
+y_axis = np.cross(z_axis, x_axis)
+y_axis /= np.linalg.norm(y_axis)
+
+R = np.column_stack([x_axis, y_axis, z_axis])  # columns = new basis
+# R maps world → COLMAP. We want COLMAP → world:
+R = R.T
+
+print(f'Manhattan rotation:')
+for i, ax in enumerate(['X','Y','Z']):
+    print(f'  {ax}: [{R[i,0]:.4f}, {R[i,1]:.4f}, {R[i,2]:.4f}]')
+
+# Apply rotation to points3D
+with open(f'{SPARSE}/0/points3D.bin', 'rb') as f:
+    data = bytearray(f.read())
+# Read header
+n_pts = struct.unpack('<Q', data[0:8])[0]
+offset = 8
+new_data = bytearray(data[:8])  # keep header
+for _ in range(n_pts):
+    pid = data[offset:offset+8]
+    xyz = np.frombuffer(data[offset+8:offset+32], dtype=np.float64)
+    rgb = data[offset+32:offset+35]
+    err = data[offset+35:offset+43]
+    tl = struct.unpack('<Q', data[offset+43:offset+51])[0]
+    track_data = data[offset+51:offset+51+tl*8]
+    # Rotate XYZ
+    new_xyz = (R @ xyz).astype(np.float64).tobytes()
+    new_data.extend(pid)
+    new_data.extend(new_xyz)
+    new_data.extend(rgb)
+    new_data.extend(err)
+    new_data.extend(struct.pack('<Q', tl))
+    new_data.extend(track_data)
+    offset += 43 + 8 + tl * 8
+with open(f'{SPARSE}/0/points3D.bin', 'wb') as f:
+    f.write(new_data)
+print(f'  points3D rotated ({len(pts):,} pts)')
+
+# Apply rotation to camera poses in images.bin
+with open(f'{SPARSE}/0/images.bin', 'rb') as f:
+    img_data = bytearray(f.read())
+offset = 8  # skip num_images
+n_imgs = struct.unpack('<Q', img_data[0:8])[0]
+new_img = bytearray(img_data[:8])
+from scipy.spatial.transform import Rotation as Rot
+for _ in range(n_imgs):
+    img_id = img_data[offset:offset+4]
+    q = np.frombuffer(img_data[offset+4:offset+36], dtype=np.float64)  # w,x,y,z
+    t = np.frombuffer(img_data[offset+36:offset+60], dtype=np.float64)
+    cam_id = img_data[offset+60:offset+64]
+    # Find name end
+    name_start = offset + 64
+    name_end = img_data.index(0, name_start)
+    name = img_data[name_start:name_end+1]
+    n_pts2d = struct.unpack('<Q', img_data[name_end+1:name_end+9])[0]
+    pts2d_data = img_data[name_end+9:name_end+9+n_pts2d*24]
+    # Rotate camera: R_q * q, R * t
+    q_rot = Rot.from_matrix(R).as_quat()  # scipy: x,y,z,w
+    rw,rx,ry,rz = q_rot[3], q_rot[0], q_rot[1], q_rot[2]
+    ow,ox,oy,oz = q[0], q[1], q[2], q[3]  # w,x,y,z from COLMAP
+    nw = rw*ow - rx*ox - ry*oy - rz*oz
+    nx = rw*ox + rx*ow + ry*oz - rz*oy
+    ny = rw*oy - rx*oz + ry*ow + rz*ox
+    nz = rw*oz + rx*oy - ry*ox + rz*ow
+    new_q = np.array([nw, nx, ny, nz], dtype=np.float64)
+    new_t = (R @ t).astype(np.float64)
+    new_img.extend(img_id)
+    new_img.extend(new_q.tobytes())
+    new_img.extend(new_t.tobytes())
+    new_img.extend(cam_id)
+    new_img.extend(name)
+    new_img.extend(struct.pack('<Q', n_pts2d))
+    new_img.extend(pts2d_data)
+    offset = name_end + 9 + n_pts2d * 24
+with open(f'{SPARSE}/0/images.bin', 'wb') as f:
+    f.write(new_img)
+print(f'  images.bin rotated ({n_imgs} cameras)')
+
+json.dump({'R': R.tolist()}, open(f'{SPARSE}/0/manhattan.json', 'w'))
+" 2>&1 && touch "$MANHATTAN_FLAG" && log "Manhattan 对齐完成"
+fi
+
+# ================================================================================================
 # Step 3 — 3DGUT train
 # ================================================================================================
 RUNS_DIR="$OUTPUT_DIR/runs"
@@ -316,14 +448,12 @@ if [ "$SKIP_USDZ" = false ]; then
     USDZ_FILE="${TRAIN_OUTDIR}/scene_nurec.usdz"
 
     if [ -f "$CKPT_SRC" ]; then
-        log "清理 + 矩形房间对齐..."
+        log "清理浮空高斯..."
         python -c "
-import torch, numpy as np, json
+import torch, numpy as np
 from sklearn.cluster import DBSCAN
-from sklearn.decomposition import PCA
 from collections import Counter
 from scipy.spatial import cKDTree
-from scipy.spatial.transform import Rotation as Rot
 
 ckpt = torch.load('$CKPT_SRC', map_location='cpu', weights_only=False)
 pos = ckpt['positions'].detach().numpy()
@@ -355,69 +485,6 @@ for k in ['positions','rotation','scale','density','features_albedo','features_s
     if k in ckpt: ckpt[k] = ckpt[k][keep]
 print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
 
-# 4. Rectangular room alignment via PCA
-# Room is a rectangular box: walls are orthogonal, floor/ceiling are horizontal
-# PCA axes = wall normals; smallest variance = height → Z; longest → X
-R = np.eye(3)
-pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
-comps = pca.components_.copy()
-var = pca.explained_variance_.copy()
-
-# Step A: height axis (smallest var) → Z
-height_axis = comps[np.argmin(var)].copy()
-height_axis /= np.linalg.norm(height_axis)
-angle = np.degrees(np.arccos(np.clip(np.dot(height_axis, [0,0,1]), -1, 1)))
-print(f'Height axis=[{height_axis[0]:.3f},{height_axis[1]:.3f},{height_axis[2]:.3f}] angle={angle:.1f}deg')
-if angle > 2:
-    v = np.cross(height_axis, [0,0,1]); s = np.linalg.norm(v)
-    if s > 1e-8:
-        v /= s; c0 = np.dot(height_axis, [0,0,1])
-        vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
-        R_zup = np.eye(3) + vx + vx @ vx * ((1-c0)/(s*s))
-        pos_t = (R_zup @ ckpt['positions'].detach().numpy().T).T
-        ckpt['positions'] = torch.from_numpy(pos_t).float()
-        R = R_zup @ R
-        comps = (R_zup @ comps.T).T
-        print(f'  Rotated {angle:.1f}deg → Z-up')
-
-# Step B: flip so floor (denser) is at bottom
-p = ckpt['positions'].detach().numpy()
-z_lo, z_hi = np.percentile(p[:,2], 10), np.percentile(p[:,2], 90)
-bot = ((p[:,2]>=z_lo)&(p[:,2]<z_lo+(z_hi-z_lo)*0.2)).sum()
-top = ((p[:,2]>z_hi-(z_hi-z_lo)*0.2)&(p[:,2]<=z_hi)).sum()
-if top > bot:
-    flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
-    ckpt['positions'] = torch.from_numpy((flip @ p.T).T).float()
-    R = flip @ R
-    print(f'  Flipped (top={top} > bot={bot})')
-
-# Step C: yaw-align longest horizontal axis → X
-p = ckpt['positions'].detach().numpy()
-xy_comps = comps.copy(); xy_comps[:,2] = 0
-lengths = np.linalg.norm(xy_comps, axis=1)
-longest_xy = xy_comps[np.argmax(lengths)]
-longest_xy /= np.linalg.norm(longest_xy)
-yaw = np.arctan2(longest_xy[1], longest_xy[0])
-print(f'  Yaw: longest XY=[{longest_xy[0]:.3f},{longest_xy[1]:.3f}] → rotate {-np.degrees(yaw):.1f}deg around Z')
-R_yaw = np.array([[np.cos(-yaw),-np.sin(-yaw),0],[np.sin(-yaw),np.cos(-yaw),0],[0,0,1]])
-ckpt['positions'] = torch.from_numpy((R_yaw @ p.T).T).float()
-R = R_yaw @ R
-
-# Apply rotation to quaternions
-q_R = Rot.from_matrix(R).as_quat()
-rw,rx,ry,rz = q_R[3],q_R[0],q_R[1],q_R[2]
-qo = ckpt['rotation'].detach().numpy()
-ow,ox,oy,oz = qo[:,0],qo[:,1],qo[:,2],qo[:,3]
-ckpt['rotation'] = torch.from_numpy(np.stack([
-    rw*ow-rx*ox-ry*oy-rz*oz, rw*ox+rx*ow+ry*oz-rz*oy,
-    rw*oy-rx*oz+ry*ow+rz*ox, rw*oz+rx*oy-ry*ox+rz*ow], axis=1)).float()
-
-# Final extent
-pf = ckpt['positions'].detach().numpy()
-for ax,i in [('X',0),('Y',1),('Z',2)]:
-    print(f'  {ax}: [{pf[:,i].min():.1f}, {pf[:,i].max():.1f}] span={pf[:,i].max()-pf[:,i].min():.1f}')
-
-json.dump({'R': R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
         ckpt[k] = torch.nn.Parameter(ckpt[k])
@@ -456,10 +523,9 @@ fi
 # Ground collision — bounding box in original coordinate frame
 # ================================================================================================
 GROUND_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/ground_collision.usda"
-ROTATION_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/rotation.json"
 if [ -f "$SPARSE_DIR/0/points3D.bin" ]; then
     python -c "
-import struct, numpy as np, json
+import struct, numpy as np
 from pxr import Usd, UsdGeom, UsdPhysics, Gf
 
 path = '$SPARSE_DIR/0/points3D.bin'
@@ -472,14 +538,7 @@ with open(path, 'rb') as f:
         track_len = struct.unpack('<Q', f.read(8))[0]; f.seek(track_len * 8, 1)
 pts = np.array(pts)
 
-# Apply same PCA rotation as visual model
-R = np.eye(3)
-try:
-    rot = json.load(open('$ROTATION_FILE'))
-    R = np.array(rot['R'])
-except: pass
-pts = (R @ pts.T).T
-
+# Points already Manhattan-aligned — use directly
 xmin, xmax = np.percentile(pts[:,0], 5), np.percentile(pts[:,0], 95)
 ymin, ymax = np.percentile(pts[:,1], 5), np.percentile(pts[:,1], 95)
 zmin, zmax = np.percentile(pts[:,2], 5), np.percentile(pts[:,2], 95)
