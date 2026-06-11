@@ -360,6 +360,7 @@ n_clean = ckpt['positions'].shape[0]
 print(f'{n_clean:,} / {N:,} ({n_clean/N*100:.0f}%)')
 
 # 4. PCA Z-up alignment
+R = np.eye(3)  # default: no rotation
 pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
 z_world = np.array([0.0, 0.0, 1.0])
 height_axis = pca.components_[np.argmin(pca.explained_variance_)]
@@ -390,6 +391,7 @@ if angle > 2:
         top_density = ((p[:,2] > z_hi - (z_hi-z_lo)*0.2) & (p[:,2] <= z_hi)).sum()
         if top_density > bot_density:
             flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
+            R = flip @ R
             ckpt['positions'] = torch.from_numpy((flip @ p.T).T).float()
             qo = ckpt['rotation'].detach().numpy()
             nw = -qo[:,1]; nx = qo[:,0]; ny = -qo[:,3]; nz = qo[:,2]
@@ -397,6 +399,10 @@ if angle > 2:
             print(f'Flipped upright (top={top_density} > bot={bot_density})')
 else:
     print('Already Z-aligned')
+
+# Save rotation for ground collision
+import json
+json.dump({'R': R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
 
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
@@ -425,9 +431,10 @@ fi
 # Ground collision — bounding box in original coordinate frame
 # ================================================================================================
 GROUND_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/ground_collision.usda"
+ROTATION_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/rotation.json"
 if [ -f "$SPARSE_DIR/0/points3D.bin" ] && [ ! -f "$GROUND_FILE" ]; then
     python -c "
-import struct, numpy as np
+import struct, numpy as np, json
 from pxr import Usd, UsdGeom, UsdPhysics, Gf
 
 path = '$SPARSE_DIR/0/points3D.bin'
@@ -440,7 +447,14 @@ with open(path, 'rb') as f:
         track_len = struct.unpack('<Q', f.read(8))[0]; f.seek(track_len * 8, 1)
 pts = np.array(pts)
 
-# Use COLMAP points directly (no rotation)
+# Apply same PCA rotation as visual model
+R = np.eye(3)
+try:
+    rot = json.load(open('$ROTATION_FILE'))
+    R = np.array(rot['R'])
+except: pass
+pts = (R @ pts.T).T
+
 xmin, xmax = np.percentile(pts[:,0], 5), np.percentile(pts[:,0], 95)
 ymin, ymax = np.percentile(pts[:,1], 5), np.percentile(pts[:,1], 95)
 zmin, zmax = np.percentile(pts[:,2], 5), np.percentile(pts[:,2], 95)
