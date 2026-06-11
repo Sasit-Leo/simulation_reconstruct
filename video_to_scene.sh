@@ -446,10 +446,21 @@ from pxr import Usd, UsdGeom, UsdPhysics
 ckpt = torch.load('$CKPT_CLEAN', map_location='cpu', weights_only=False)
 pts = ckpt['positions'].detach().numpy()
 
-# Subsample for Poisson (depth=10 is expensive)
-n_sub = min(len(pts), 200000)
+# Subsample + add ceiling/floor seed points
+n_sub = min(len(pts), 150000)
 idx = np.random.RandomState(42).choice(len(pts), n_sub, replace=False)
 pts_sub = pts[idx]
+
+# Add ceiling and floor seed points with neighborhood colors
+z_min, z_max = pts[:,2].min(), pts[:,2].max()
+grid_n = 40
+x_range = np.linspace(pts[:,0].min(), pts[:,0].max(), grid_n)
+y_range = np.linspace(pts[:,1].min(), pts[:,1].max(), grid_n)
+xx, yy = np.meshgrid(x_range, y_range)
+for z_val, label in [(z_min, 'floor'), (z_max, 'ceiling')]:
+    grid_xyz = np.column_stack([xx.ravel(), yy.ravel(), np.full(grid_n*grid_n, z_val)])
+    pts_sub = np.vstack([pts_sub, grid_xyz])
+    print(f'Added {grid_n*grid_n} {label} seeds at Z={z_val:.2f}')
 
 pcd = o3d.geometry.PointCloud()
 pcd.points = o3d.utility.Vector3dVector(pts_sub)
@@ -513,7 +524,7 @@ fi
 # ================================================================================================
 GROUND_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/ground_collision.usda"
 ROTATION_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/rotation.json"
-if [ -f "$SPARSE_DIR/0/points3D.bin" ] && [ ! -f "$GROUND_FILE" ]; then
+if [ -f "$SPARSE_DIR/0/points3D.bin" ]; then
     python -c "
 import struct, numpy as np, json
 from pxr import Usd, UsdGeom, UsdPhysics, Gf
