@@ -417,6 +417,25 @@ torch.save(ckpt, '$CKPT_CLEAN')
             --no-transform --no-cameras --no-background 2>&1 | tail -2
         [ -f "$USDZ_FILE" ] && log "USDZ: $USDZ_FILE ($(du -h "$USDZ_FILE" | cut -f1))"
 
+        # Combined scene referencing all outputs (load this one file)
+        python -c "
+with open('${TRAIN_OUTDIR}/scene_combined.usda', 'w') as f:
+    f.write('''#usda 1.0
+(
+    defaultPrim = \"World\"
+    metersPerUnit = 1.0
+    upAxis = \"Z\"
+)
+def Xform \"World\"
+{
+    def \"gaussians\" (references = @./scene_nurec.usdz@) { }
+    def \"mesh_fill\" (references = @./scene_mesh.usda@) { }
+    def \"ground\" (references = @./ground_collision.usda@) { }
+}
+''')
+" 2>&1
+        log "组合场景: ${TRAIN_OUTDIR}/scene_combined.usda"
+
         # Step 5 — Poisson mesh from cleaned Gaussians (fills ceiling/floor holes)
         MESH_FILE="${TRAIN_OUTDIR}/scene_mesh.usda"
         log "Poisson 网格重建..."
