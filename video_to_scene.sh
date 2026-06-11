@@ -333,7 +333,7 @@ N = len(pos)
 
 # 1. Opacity filter
 opacity = 1/(1+np.exp(-density))
-keep = opacity >= 0.008
+keep = opacity >= 0.015
 
 # 2. Scale filter
 scale_norm = np.linalg.norm(scales, axis=1)
@@ -382,6 +382,18 @@ if angle > 2:
             rw*ow-rx*ox-ry*oy-rz*oz, rw*ox+rx*ow+ry*oz-rz*oy,
             rw*oy-rx*oz+ry*ow+rz*ox, rw*oz+rx*oy-ry*ox+rz*ow], axis=1)).float()
         print(f'Rotated {angle:.1f}deg to Z-up')
+        # Check if upside-down: densest region should be near Z=0 (floor), not at top
+        p = ckpt['positions'].detach().numpy()
+        z_median = np.median(p[:,2])
+        if z_median > p[:,2].max() * 0.5:
+            # Flip 180 around X axis
+            flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
+            ckpt['positions'] = torch.from_numpy((flip @ p.T).T).float()
+            qo = ckpt['rotation'].detach().numpy()
+            # 180deg around X: q_R = (0,1,0,0) in wxyz, q' = q_R ⊗ q
+            nw = -qo[:,1]; nx = qo[:,0]; ny = -qo[:,3]; nz = qo[:,2]
+            ckpt['rotation'] = torch.from_numpy(np.stack([nw, nx, ny, nz], axis=1)).float()
+            print(f'Flipped upright (median Z was {z_median:.1f})')
 else:
     print('Already Z-aligned')
 
