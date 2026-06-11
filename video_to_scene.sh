@@ -318,11 +318,11 @@ if [ "$SKIP_USDZ" = false ]; then
     if [ -f "$CKPT_SRC" ]; then
         log "清理浮空 + PCA 旋转..."
         python -c "
-import torch, numpy as np
+import torch, numpy as np, struct
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
 from collections import Counter
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree, ConvexHull, Delaunay
 from scipy.spatial.transform import Rotation as Rot
 
 ckpt = torch.load('$CKPT_SRC', map_location='cpu', weights_only=False)
@@ -403,6 +403,63 @@ else:
 # Save rotation for ground collision
 import json
 json.dump({'R': R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
+
+# 5. Camera trajectory clearing: remove Gaussians inside camera path
+cams = []
+with open('$SPARSE_DIR/0/images.bin', 'rb') as f:
+    cn = struct.unpack('<Q', f.read(8))[0]
+    for _ in range(cn):
+        img_id = struct.unpack('<I', f.read(4))[0]
+        qw,qx,qy,qz = struct.unpack('<dddd', f.read(32))
+        tx,ty,tz = struct.unpack('<ddd', f.read(24))
+        cam_id = struct.unpack('<I', f.read(4))[0]
+        name = b''
+        while True:
+            c = f.read(1)
+            if c == b'\\x00': break
+            name += c
+        n_pts2d = struct.unpack('<Q', f.read(8))[0]
+        f.read(n_pts2d * 24)
+        cams.append((tx, ty, tz))
+cams = np.array(cams)
+cams = (R @ cams.T).T  # rotate to same frame as Gaussians
+
+from scipy.spatial import ConvexHull, Delaunay
+hull = ConvexHull(cams[:, :2])
+margin = 0.5
+hull_pts = cams[hull.vertices, :2]
+center = hull_pts.mean(axis=0)
+hull_pts = center + (hull_pts - center) * 1.3  # dilate by 30%
+tri = Delaunay(hull_pts)
+p = ckpt['positions'].detach().numpy()
+inside = tri.find_simplex(p[:, :2]) >= 0
+print(f'Camera path clearing: removed {inside.sum():,} / {len(p):,} Gaussians')
+keep_traj = ~inside
+
+for k in ['positions','rotation','scale','density','features_albedo','features_specular']:
+    if k in ckpt: ckpt[k] = ckpt[k][keep_traj]
+print(f'After clearing: {ckpt[\"positions\"].shape[0]:,} Gaussians')
+
+# 6. Fill ceiling/floor holes with low-opacity Gaussians
+p = ckpt['positions'].detach().numpy()
+z_floor = np.percentile(p[:,2], 5)
+z_ceil = np.percentile(p[:,2], 95)
+x_range = np.linspace(p[:,0].min(), p[:,0].max(), 30)
+y_range = np.linspace(p[:,1].min(), p[:,1].max(), 30)
+
+# Sample colors from nearest Gaussians at each Z level
+from scipy.spatial import cKDTree
+tree = cKDTree(p)
+for z_val, z_name in [(z_floor, 'floor'), (z_ceil, 'ceiling')]:
+    grid_xy = np.stack(np.meshgrid(x_range, y_range), -1).reshape(-1, 2)
+    grid_xyz = np.column_stack([grid_xy, np.full(len(grid_xy), z_val)])
+    _, nn = tree.query(grid_xyz, k=5)
+    for key in ['positions','rotation','scale','density','features_albedo','features_specular']:
+        if key in ckpt:
+            src = ckpt[key].detach().numpy()
+            nn_vals = src[nn].mean(axis=1)  # average nearest neighbors
+            ckpt[key] = torch.cat([torch.from_numpy(nn_vals).float(), ckpt[key]])
+    print(f'Filled {z_name}: {len(grid_xy)} Gaussians at Z={z_val:.2f}')
 
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
