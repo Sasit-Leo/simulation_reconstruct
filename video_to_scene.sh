@@ -10,7 +10,7 @@ VIDEO_PATH=""
 OUTPUT_DIR=""
 EXPERIMENT_NAME=""
 FPS=5
-MAX_IMAGE_SIZE=1920
+MAX_IMAGE_SIZE=3200
 GPU_ID=0
 TRAIN_ITERATIONS=60000
 DOWNSAMPLE_FACTOR=2
@@ -179,7 +179,7 @@ else
         --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" \
         --ImageReader.camera_model SIMPLE_RADIAL --ImageReader.single_camera 1 \
         --FeatureExtraction.use_gpu 1 --SiftExtraction.max_image_size "$MAX_IMAGE_SIZE" \
-        --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.0033 \
+        --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.002 \
         --SiftExtraction.edge_threshold 10 --SiftExtraction.num_octaves 5 --SiftExtraction.estimate_affine_shape 1 \
         --SiftExtraction.domain_size_pooling 0 2>&1 | tail -2
 
@@ -463,7 +463,7 @@ N = len(pos)
 
 # 1. Opacity filter
 opacity = 1/(1+np.exp(-density))
-keep = opacity >= 0.015
+keep = opacity >= 0.008
 
 # 2. Scale filter
 scale_norm = np.linalg.norm(scales, axis=1)
