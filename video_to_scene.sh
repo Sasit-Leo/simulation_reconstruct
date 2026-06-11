@@ -316,9 +316,9 @@ if [ "$SKIP_USDZ" = false ]; then
     USDZ_FILE="${TRAIN_OUTDIR}/scene_nurec.usdz"
 
     if [ -f "$CKPT_SRC" ]; then
-        log "清理浮空 + PCA 旋转..."
+        log "清理 + 矩形房间对齐..."
         python -c "
-import torch, numpy as np
+import torch, numpy as np, json
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
 from collections import Counter
@@ -339,71 +339,85 @@ keep = opacity >= 0.015
 scale_norm = np.linalg.norm(scales, axis=1)
 keep &= scale_norm < np.nanmedian(scale_norm) * 3
 
-# 3. DBSCAN: keep largest connected component
+# 3. DBSCAN: keep largest cluster
 n_sample = min(N//10, 100000)
 rng = np.random.RandomState(42)
 idx = rng.choice(N, n_sample, replace=False)
 sample = pos[idx]
 cl = DBSCAN(eps=5.0, min_samples=30).fit(sample)
-ls = cl.labels_
-cnt = Counter(ls[ls>=0])
+ls = cl.labels_; cnt = Counter(ls[ls>=0])
 if cnt:
     largest = cnt.most_common(1)[0][0]
-    tree = cKDTree(sample)
-    _, nn = tree.query(pos, k=3)
+    tree = cKDTree(sample); _, nn = tree.query(pos, k=3)
     fl = np.array([ls[nn[i][ls[nn[i]]>=0][0]] if np.any(ls[nn[i]]>=0) else -1 for i in range(N)])
     keep &= fl == largest
-
 for k in ['positions','rotation','scale','density','features_albedo','features_specular']:
     if k in ckpt: ckpt[k] = ckpt[k][keep]
-n_clean = ckpt['positions'].shape[0]
-print(f'{n_clean:,} / {N:,} ({n_clean/N*100:.0f}%)')
+print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
 
-# 4. PCA Z-up alignment
-R = np.eye(3)  # default: no rotation
+# 4. Rectangular room alignment via PCA
+# Room is a rectangular box: walls are orthogonal, floor/ceiling are horizontal
+# PCA axes = wall normals; smallest variance = height → Z; longest → X
+R = np.eye(3)
 pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
-z_world = np.array([0.0, 0.0, 1.0])
-height_axis = pca.components_[np.argmin(pca.explained_variance_)]
+comps = pca.components_.copy()
+var = pca.explained_variance_.copy()
+
+# Step A: height axis (smallest var) → Z
+height_axis = comps[np.argmin(var)].copy()
 height_axis /= np.linalg.norm(height_axis)
-angle = np.degrees(np.arccos(np.clip(np.dot(height_axis, z_world), -1, 1)))
-print(f'PCA height axis=[{height_axis[0]:.3f},{height_axis[1]:.3f},{height_axis[2]:.3f}], angle={angle:.1f}deg')
+angle = np.degrees(np.arccos(np.clip(np.dot(height_axis, [0,0,1]), -1, 1)))
+print(f'Height axis=[{height_axis[0]:.3f},{height_axis[1]:.3f},{height_axis[2]:.3f}] angle={angle:.1f}deg')
 if angle > 2:
-    v = np.cross(height_axis, z_world); s = np.linalg.norm(v)
+    v = np.cross(height_axis, [0,0,1]); s = np.linalg.norm(v)
     if s > 1e-8:
-        v /= s; c0 = np.dot(height_axis, z_world)
+        v /= s; c0 = np.dot(height_axis, [0,0,1])
         vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
-        R = np.eye(3) + vx + vx @ vx * ((1-c0)/(s*s))
-        pos_f = ckpt['positions'].detach().numpy()
-        ckpt['positions'] = torch.from_numpy((R @ pos_f.T).T).float()
-        q_R = Rot.from_matrix(R).as_quat()
-        rw,rx,ry,rz = q_R[3], q_R[0], q_R[1], q_R[2]
-        qo = ckpt['rotation'].detach().numpy()
-        ow,ox,oy,oz = qo[:,0], qo[:,1], qo[:,2], qo[:,3]
-        ckpt['rotation'] = torch.from_numpy(np.stack([
-            rw*ow-rx*ox-ry*oy-rz*oz, rw*ox+rx*ow+ry*oz-rz*oy,
-            rw*oy-rx*oz+ry*ow+rz*ox, rw*oz+rx*oy-ry*ox+rz*ow], axis=1)).float()
-        print(f'Rotated {angle:.1f}deg to Z-up')
-        # Floor should be denser (more Gaussians) than ceiling
-        p = ckpt['positions'].detach().numpy()
-        z_lo = np.percentile(p[:,2], 10)
-        z_hi = np.percentile(p[:,2], 90)
-        bot_density = ((p[:,2] >= z_lo) & (p[:,2] < z_lo + (z_hi-z_lo)*0.2)).sum()
-        top_density = ((p[:,2] > z_hi - (z_hi-z_lo)*0.2) & (p[:,2] <= z_hi)).sum()
-        if top_density > bot_density:
-            flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
-            R = flip @ R
-            ckpt['positions'] = torch.from_numpy((flip @ p.T).T).float()
-            qo = ckpt['rotation'].detach().numpy()
-            nw = -qo[:,1]; nx = qo[:,0]; ny = -qo[:,3]; nz = qo[:,2]
-            ckpt['rotation'] = torch.from_numpy(np.stack([nw, nx, ny, nz], axis=1)).float()
-            print(f'Flipped upright (top={top_density} > bot={bot_density})')
-else:
-    print('Already Z-aligned')
+        R_zup = np.eye(3) + vx + vx @ vx * ((1-c0)/(s*s))
+        pos_t = (R_zup @ ckpt['positions'].detach().numpy().T).T
+        ckpt['positions'] = torch.from_numpy(pos_t).float()
+        R = R_zup @ R
+        comps = (R_zup @ comps.T).T
+        print(f'  Rotated {angle:.1f}deg → Z-up')
 
-# Save rotation for ground collision
-import json
+# Step B: flip so floor (denser) is at bottom
+p = ckpt['positions'].detach().numpy()
+z_lo, z_hi = np.percentile(p[:,2], 10), np.percentile(p[:,2], 90)
+bot = ((p[:,2]>=z_lo)&(p[:,2]<z_lo+(z_hi-z_lo)*0.2)).sum()
+top = ((p[:,2]>z_hi-(z_hi-z_lo)*0.2)&(p[:,2]<=z_hi)).sum()
+if top > bot:
+    flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
+    ckpt['positions'] = torch.from_numpy((flip @ p.T).T).float()
+    R = flip @ R
+    print(f'  Flipped (top={top} > bot={bot})')
+
+# Step C: yaw-align longest horizontal axis → X
+p = ckpt['positions'].detach().numpy()
+xy_comps = comps.copy(); xy_comps[:,2] = 0
+lengths = np.linalg.norm(xy_comps, axis=1)
+longest_xy = xy_comps[np.argmax(lengths)]
+longest_xy /= np.linalg.norm(longest_xy)
+yaw = np.arctan2(longest_xy[1], longest_xy[0])
+print(f'  Yaw: longest XY=[{longest_xy[0]:.3f},{longest_xy[1]:.3f}] → rotate {-np.degrees(yaw):.1f}deg around Z')
+R_yaw = np.array([[np.cos(-yaw),-np.sin(-yaw),0],[np.sin(-yaw),np.cos(-yaw),0],[0,0,1]])
+ckpt['positions'] = torch.from_numpy((R_yaw @ p.T).T).float()
+R = R_yaw @ R
+
+# Apply rotation to quaternions
+q_R = Rot.from_matrix(R).as_quat()
+rw,rx,ry,rz = q_R[3],q_R[0],q_R[1],q_R[2]
+qo = ckpt['rotation'].detach().numpy()
+ow,ox,oy,oz = qo[:,0],qo[:,1],qo[:,2],qo[:,3]
+ckpt['rotation'] = torch.from_numpy(np.stack([
+    rw*ow-rx*ox-ry*oy-rz*oz, rw*ox+rx*ow+ry*oz-rz*oy,
+    rw*oy-rx*oz+ry*ow+rz*ox, rw*oz+rx*oy-ry*ox+rz*ow], axis=1)).float()
+
+# Final extent
+pf = ckpt['positions'].detach().numpy()
+for ax,i in [('X',0),('Y',1),('Z',2)]:
+    print(f'  {ax}: [{pf[:,i].min():.1f}, {pf[:,i].max():.1f}] span={pf[:,i].max()-pf[:,i].min():.1f}')
+
 json.dump({'R': R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
-
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
         ckpt[k] = torch.nn.Parameter(ckpt[k])
@@ -417,89 +431,15 @@ torch.save(ckpt, '$CKPT_CLEAN')
             --no-transform --no-cameras --no-background 2>&1 | tail -2
         [ -f "$USDZ_FILE" ] && log "USDZ: $USDZ_FILE ($(du -h "$USDZ_FILE" | cut -f1))"
 
-        # Combined scene referencing all outputs (load this one file)
+        # Combined scene (Gaussians + ground)
         python -c "
-python -c "
 from pxr import Usd
 stage = Usd.Stage.CreateNew('${TRAIN_OUTDIR}/scene_combined.usda')
-stage.GetRootLayer().subLayerPaths = ['./scene_nurec.usdz', './scene_mesh.usda', './ground_collision.usda']
+stage.GetRootLayer().subLayerPaths = ['./scene_nurec.usdz', './ground_collision.usda']
 stage.SetDefaultPrim(stage.DefinePrim('/World', 'Xform'))
 stage.GetRootLayer().Save()
-"
 " 2>&1
         log "组合场景: ${TRAIN_OUTDIR}/scene_combined.usda"
-
-        # Step 5 — Poisson mesh from cleaned Gaussians (fills ceiling/floor holes)
-        MESH_FILE="${TRAIN_OUTDIR}/scene_mesh.usda"
-        log "Poisson 网格重建..."
-        python -c "
-import torch, numpy as np, open3d as o3d
-from pxr import Usd, UsdGeom, UsdPhysics
-
-ckpt = torch.load('$CKPT_CLEAN', map_location='cpu', weights_only=False)
-pts = ckpt['positions'].detach().numpy()
-
-# Subsample + add ceiling/floor seed points
-n_sub = min(len(pts), 150000)
-idx = np.random.RandomState(42).choice(len(pts), n_sub, replace=False)
-pts_sub = pts[idx]
-
-# Add ceiling and floor seed points with neighborhood colors
-z_min, z_max = pts[:,2].min(), pts[:,2].max()
-grid_n = 40
-x_range = np.linspace(pts[:,0].min(), pts[:,0].max(), grid_n)
-y_range = np.linspace(pts[:,1].min(), pts[:,1].max(), grid_n)
-xx, yy = np.meshgrid(x_range, y_range)
-for z_val, label in [(z_min, 'floor'), (z_max, 'ceiling')]:
-    grid_xyz = np.column_stack([xx.ravel(), yy.ravel(), np.full(grid_n*grid_n, z_val)])
-    pts_sub = np.vstack([pts_sub, grid_xyz])
-    print(f'Added {grid_n*grid_n} {label} seeds at Z={z_val:.2f}')
-
-pcd = o3d.geometry.PointCloud()
-pcd.points = o3d.utility.Vector3dVector(pts_sub)
-pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=30))
-pcd.orient_normals_towards_camera_location()
-
-# Poisson surface reconstruction
-mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=10)
-# Remove low-density vertices (outliers)
-verts = np.asarray(mesh.vertices)
-dens = np.asarray(densities)
-keep = dens > np.quantile(dens, 0.05)
-mesh = mesh.select_by_index(np.where(keep)[0])
-
-# Remove triangles outside the Gaussian bounding box (10% margin)
-bbox_min = pts.min(axis=0) - np.ptp(pts, axis=0) * 0.1
-bbox_max = pts.max(axis=0) + np.ptp(pts, axis=0) * 0.1
-mesh = mesh.crop(o3d.geometry.AxisAlignedBoundingBox(bbox_min, bbox_max))
-
-mesh = mesh.simplify_vertex_clustering(voxel_size=0.05)
-mesh.remove_unreferenced_vertices()
-mesh.remove_degenerate_triangles()
-verts = np.asarray(mesh.vertices)
-faces = np.asarray(mesh.triangles)
-print(f'Poisson mesh: {len(verts):,} verts, {len(faces):,} faces')
-
-# Vertex colors from nearest Gaussians
-albedo = ckpt['features_albedo'].detach().numpy()  # [N,3] DC RGB
-from scipy.spatial import cKDTree
-tree = cKDTree(pts)
-_, nn = tree.query(np.asarray(mesh.vertices), k=5)
-vert_colors = albedo[nn].mean(axis=1)  # average 5 nearest Gaussian colors
-vert_colors = np.clip(vert_colors, 0, 1)
-
-# Export USDA with collision + vertex colors
-stage = Usd.Stage.CreateNew('$MESH_FILE')
-UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-usd_mesh = UsdGeom.Mesh.Define(stage, '/World/poisson_mesh')
-usd_mesh.CreatePointsAttr().Set(verts.astype(float).tolist())
-usd_mesh.CreateFaceVertexCountsAttr().Set([3] * len(faces))
-usd_mesh.CreateFaceVertexIndicesAttr().Set(faces.flatten().tolist())
-usd_mesh.CreateDisplayColorPrimvar('vertex', 3).Set(vert_colors.tolist())
-UsdPhysics.CollisionAPI.Apply(usd_mesh.GetPrim())
-stage.GetRootLayer().Save()
-print(f'Mesh saved: $MESH_FILE')
-" 2>&1 && log "网格: $MESH_FILE"
 
         rm -f "$CKPT_CLEAN"
         find "$TRAIN_OUTDIR" -name "export_*.usdz" ! -name "scene_nurec.usdz" -delete 2>/dev/null || true
