@@ -318,11 +318,11 @@ if [ "$SKIP_USDZ" = false ]; then
     if [ -f "$CKPT_SRC" ]; then
         log "清理浮空 + PCA 旋转..."
         python -c "
-import torch, numpy as np, struct
+import torch, numpy as np
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
 from collections import Counter
-from scipy.spatial import cKDTree, ConvexHull, Delaunay
+from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as Rot
 
 ckpt = torch.load('$CKPT_SRC', map_location='cpu', weights_only=False)
@@ -404,63 +404,6 @@ else:
 import json
 json.dump({'R': R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
 
-# 5. Camera trajectory clearing: remove Gaussians inside camera path
-cams = []
-with open('$SPARSE_DIR/0/images.bin', 'rb') as f:
-    cn = struct.unpack('<Q', f.read(8))[0]
-    for _ in range(cn):
-        img_id = struct.unpack('<I', f.read(4))[0]
-        qw,qx,qy,qz = struct.unpack('<dddd', f.read(32))
-        tx,ty,tz = struct.unpack('<ddd', f.read(24))
-        cam_id = struct.unpack('<I', f.read(4))[0]
-        name = b''
-        while True:
-            c = f.read(1)
-            if c == b'\\x00': break
-            name += c
-        n_pts2d = struct.unpack('<Q', f.read(8))[0]
-        f.read(n_pts2d * 24)
-        cams.append((tx, ty, tz))
-cams = np.array(cams)
-cams = (R @ cams.T).T  # rotate to same frame as Gaussians
-
-from scipy.spatial import ConvexHull, Delaunay
-hull = ConvexHull(cams[:, :2])
-margin = 0.5
-hull_pts = cams[hull.vertices, :2]
-center = hull_pts.mean(axis=0)
-hull_pts = center + (hull_pts - center) * 1.3  # dilate by 30%
-tri = Delaunay(hull_pts)
-p = ckpt['positions'].detach().numpy()
-inside = tri.find_simplex(p[:, :2]) >= 0
-print(f'Camera path clearing: removed {inside.sum():,} / {len(p):,} Gaussians')
-keep_traj = ~inside
-
-for k in ['positions','rotation','scale','density','features_albedo','features_specular']:
-    if k in ckpt: ckpt[k] = ckpt[k][keep_traj]
-print(f'After clearing: {ckpt[\"positions\"].shape[0]:,} Gaussians')
-
-# 6. Fill ceiling/floor holes with low-opacity Gaussians
-p = ckpt['positions'].detach().numpy()
-z_floor = np.percentile(p[:,2], 5)
-z_ceil = np.percentile(p[:,2], 95)
-x_range = np.linspace(p[:,0].min(), p[:,0].max(), 30)
-y_range = np.linspace(p[:,1].min(), p[:,1].max(), 30)
-
-# Sample colors from nearest Gaussians at each Z level
-from scipy.spatial import cKDTree
-tree = cKDTree(p)
-for z_val, z_name in [(z_floor, 'floor'), (z_ceil, 'ceiling')]:
-    grid_xy = np.stack(np.meshgrid(x_range, y_range), -1).reshape(-1, 2)
-    grid_xyz = np.column_stack([grid_xy, np.full(len(grid_xy), z_val)])
-    _, nn = tree.query(grid_xyz, k=5)
-    for key in ['positions','rotation','scale','density','features_albedo','features_specular']:
-        if key in ckpt:
-            src = ckpt[key].detach().numpy()
-            nn_vals = src[nn].mean(axis=1)  # average nearest neighbors
-            ckpt[key] = torch.cat([torch.from_numpy(nn_vals).float(), ckpt[key]])
-    print(f'Filled {z_name}: {len(grid_xy)} Gaussians at Z={z_val:.2f}')
-
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
         ckpt[k] = torch.nn.Parameter(ckpt[k])
@@ -473,6 +416,68 @@ torch.save(ckpt, '$CKPT_CLEAN')
             --checkpoint "$CKPT_CLEAN" --output "$USDZ_FILE" --format nurec \
             --no-transform --no-cameras --no-background 2>&1 | tail -2
         [ -f "$USDZ_FILE" ] && log "USDZ: $USDZ_FILE ($(du -h "$USDZ_FILE" | cut -f1))"
+
+        # Step 5 — Poisson mesh from cleaned Gaussians (fills ceiling/floor holes)
+        MESH_FILE="${TRAIN_OUTDIR}/scene_mesh.usda"
+        log "Poisson 网格重建..."
+        python -c "
+import torch, numpy as np, open3d as o3d
+from pxr import Usd, UsdGeom, UsdPhysics
+
+ckpt = torch.load('$CKPT_CLEAN', map_location='cpu', weights_only=False)
+pts = ckpt['positions'].detach().numpy()
+
+# Subsample for Poisson (depth=10 is expensive)
+n_sub = min(len(pts), 200000)
+idx = np.random.RandomState(42).choice(len(pts), n_sub, replace=False)
+pts_sub = pts[idx]
+
+pcd = o3d.geometry.PointCloud()
+pcd.points = o3d.utility.Vector3dVector(pts_sub)
+pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.5, max_nn=30))
+pcd.orient_normals_towards_camera_location()
+
+# Poisson surface reconstruction
+mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=10)
+# Remove low-density vertices (outliers)
+verts = np.asarray(mesh.vertices)
+dens = np.asarray(densities)
+keep = dens > np.quantile(dens, 0.05)
+mesh = mesh.select_by_index(np.where(keep)[0])
+
+# Remove triangles outside the Gaussian bounding box (10% margin)
+bbox_min = pts.min(axis=0) - np.ptp(pts, axis=0) * 0.1
+bbox_max = pts.max(axis=0) + np.ptp(pts, axis=0) * 0.1
+mesh = mesh.crop(o3d.geometry.AxisAlignedBoundingBox(bbox_min, bbox_max))
+
+mesh = mesh.simplify_vertex_clustering(voxel_size=0.05)
+mesh.remove_unreferenced_vertices()
+mesh.remove_degenerate_triangles()
+verts = np.asarray(mesh.vertices)
+faces = np.asarray(mesh.triangles)
+print(f'Poisson mesh: {len(verts):,} verts, {len(faces):,} faces')
+
+# Vertex colors from nearest Gaussians
+albedo = ckpt['features_albedo'].detach().numpy()  # [N,3] DC RGB
+from scipy.spatial import cKDTree
+tree = cKDTree(pts)
+_, nn = tree.query(np.asarray(mesh.vertices), k=5)
+vert_colors = albedo[nn].mean(axis=1)  # average 5 nearest Gaussian colors
+vert_colors = np.clip(vert_colors, 0, 1)
+
+# Export USDA with collision + vertex colors
+stage = Usd.Stage.CreateNew('$MESH_FILE')
+UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+usd_mesh = UsdGeom.Mesh.Define(stage, '/World/poisson_mesh')
+usd_mesh.CreatePointsAttr().Set(verts.astype(float).tolist())
+usd_mesh.CreateFaceVertexCountsAttr().Set([3] * len(faces))
+usd_mesh.CreateFaceVertexIndicesAttr().Set(faces.flatten().tolist())
+usd_mesh.CreateDisplayColorPrimvar('vertex', 3).Set(vert_colors.tolist())
+UsdPhysics.CollisionAPI.Apply(usd_mesh.GetPrim())
+stage.GetRootLayer().Save()
+print(f'Mesh saved: $MESH_FILE')
+" 2>&1 && log "网格: $MESH_FILE"
+
         rm -f "$CKPT_CLEAN"
         find "$TRAIN_OUTDIR" -name "export_*.usdz" ! -name "scene_nurec.usdz" -delete 2>/dev/null || true
         find "$TRAIN_OUTDIR" \( -name "parsed.yaml" -o -name "events.out.*" -o -name "train.log" -o -name "metrics.json" \) -delete 2>/dev/null || true
