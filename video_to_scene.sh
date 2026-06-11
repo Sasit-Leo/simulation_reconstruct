@@ -306,17 +306,100 @@ else
 fi
 
 # ================================================================================================
-# Step 4 — Copy training USDZ
+# Step 4 — Clean Gaussians + PCA Z-up + Export USDZ
 # ================================================================================================
 if [ "$SKIP_USDZ" = false ]; then
-    step "Step 4/4: USDZ 导出"
+    step "Step 4/4: 清理 + 旋转 + USDZ 导出"
     [ -z "${TRAIN_OUTDIR:-}" ] && TRAIN_OUTDIR=$(find "$RUNS_DIR/$EXPERIMENT_NAME" -maxdepth 2 -name "ckpt_last.pt" -type f -printf "%h\n" 2>/dev/null | sort | tail -1 || true)
-    EXPORT_USDZ=$(find "$TRAIN_OUTDIR" -maxdepth 1 -name "export_*.usdz" -print -quit 2>/dev/null || true)
-    if [ -n "$EXPORT_USDZ" ]; then
-        cp "$EXPORT_USDZ" "${TRAIN_OUTDIR}/scene_nurec.usdz"
-        log "USDZ: ${TRAIN_OUTDIR}/scene_nurec.usdz ($(du -h "${TRAIN_OUTDIR}/scene_nurec.usdz" | cut -f1))"
+    CKPT_SRC="${TRAIN_OUTDIR}/ckpt_last.pt"
+    CKPT_CLEAN="${TRAIN_OUTDIR}/ckpt_clean.pt"
+    USDZ_FILE="${TRAIN_OUTDIR}/scene_nurec.usdz"
+
+    if [ -f "$CKPT_SRC" ]; then
+        log "清理浮空 + PCA 旋转..."
+        python -c "
+import torch, numpy as np
+from sklearn.cluster import DBSCAN
+from sklearn.decomposition import PCA
+from collections import Counter
+from scipy.spatial import cKDTree
+from scipy.spatial.transform import Rotation as Rot
+
+ckpt = torch.load('$CKPT_SRC', map_location='cpu', weights_only=False)
+pos = ckpt['positions'].detach().numpy()
+density = ckpt['density'].detach().numpy().squeeze()
+scales = ckpt['scale'].detach().numpy()
+N = len(pos)
+
+# 1. Opacity filter
+opacity = 1/(1+np.exp(-density))
+keep = opacity >= 0.008
+
+# 2. Scale filter
+scale_norm = np.linalg.norm(scales, axis=1)
+keep &= scale_norm < np.nanmedian(scale_norm) * 3
+
+# 3. DBSCAN: keep largest connected component
+n_sample = min(N//10, 100000)
+rng = np.random.RandomState(42)
+idx = rng.choice(N, n_sample, replace=False)
+sample = pos[idx]
+cl = DBSCAN(eps=5.0, min_samples=30).fit(sample)
+ls = cl.labels_
+cnt = Counter(ls[ls>=0])
+if cnt:
+    largest = cnt.most_common(1)[0][0]
+    tree = cKDTree(sample)
+    _, nn = tree.query(pos, k=3)
+    fl = np.array([ls[nn[i][ls[nn[i]]>=0][0]] if np.any(ls[nn[i]]>=0) else -1 for i in range(N)])
+    keep &= fl == largest
+
+for k in ['positions','rotation','scale','density','features_albedo','features_specular']:
+    if k in ckpt: ckpt[k] = ckpt[k][keep]
+n_clean = ckpt['positions'].shape[0]
+print(f'{n_clean:,} / {N:,} ({n_clean/N*100:.0f}%)')
+
+# 4. PCA Z-up alignment
+pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
+z_world = np.array([0.0, 0.0, 1.0])
+height_axis = pca.components_[np.argmin(pca.explained_variance_)]
+height_axis /= np.linalg.norm(height_axis)
+angle = np.degrees(np.arccos(np.clip(np.dot(height_axis, z_world), -1, 1)))
+print(f'PCA height axis=[{height_axis[0]:.3f},{height_axis[1]:.3f},{height_axis[2]:.3f}], angle={angle:.1f}deg')
+if angle > 2:
+    v = np.cross(height_axis, z_world); s = np.linalg.norm(v)
+    if s > 1e-8:
+        v /= s; c0 = np.dot(height_axis, z_world)
+        vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
+        R = np.eye(3) + vx + vx @ vx * ((1-c0)/(s*s))
+        pos_f = ckpt['positions'].detach().numpy()
+        ckpt['positions'] = torch.from_numpy((R @ pos_f.T).T).float()
+        q_R = Rot.from_matrix(R).as_quat()
+        rw,rx,ry,rz = q_R[3], q_R[0], q_R[1], q_R[2]
+        qo = ckpt['rotation'].detach().numpy()
+        ow,ox,oy,oz = qo[:,0], qo[:,1], qo[:,2], qo[:,3]
+        ckpt['rotation'] = torch.from_numpy(np.stack([
+            rw*ow-rx*ox-ry*oy-rz*oz, rw*ox+rx*ow+ry*oz-rz*oy,
+            rw*oy-rx*oz+ry*ow+rz*ox, rw*oz+rx*oy-ry*ox+rz*ow], axis=1)).float()
+        print(f'Rotated {angle:.1f}deg to Z-up')
+else:
+    print('Already Z-aligned')
+
+for k in list(ckpt.keys()):
+    if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
+        ckpt[k] = torch.nn.Parameter(ckpt[k])
+torch.save(ckpt, '$CKPT_CLEAN')
+" 2>&1 && log "清理完成: $CKPT_CLEAN"
+
+        log "导出 NuRec USDZ ..."
+        cd "$THREEDGRUT_DIR"
+        python -m threedgrut.export.scripts.export_usd \
+            --checkpoint "$CKPT_CLEAN" --output "$USDZ_FILE" --format nurec \
+            --no-transform --no-cameras --no-background 2>&1 | tail -2
+        [ -f "$USDZ_FILE" ] && log "USDZ: $USDZ_FILE ($(du -h "$USDZ_FILE" | cut -f1))"
+        rm -f "$CKPT_CLEAN"
     else
-        warn "未找到训练导出的 USDZ"
+        warn "未找到 checkpoint"
     fi
 fi
 
