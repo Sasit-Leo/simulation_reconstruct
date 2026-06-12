@@ -276,7 +276,8 @@ else
         "render.particle_radiance_sph_degree=4" \
         "model.progressive_training.max_n_features=4" \
         "model.progressive_training.increase_frequency=500" \
-        "optimizer.params.features_specular.lr=0.001" \
+        "optimizer.params.features_albedo.lr=0.0025" \
+        "optimizer.params.features_specular.lr=0.000125" \
         "loss.use_l2=true" "loss.lambda_l2=0.3" \
         "strategy.density_decay.start_iteration=500" "strategy.density_decay.end_iteration=60000" \
         "strategy.prune_scale.start_iteration=500" "strategy.prune_scale.end_iteration=30000" \
@@ -391,9 +392,23 @@ if angle > 2:
         ckpt['rotation'] = torch.from_numpy(np.stack([-qo[:,1],qo[:,0],-qo[:,3],qo[:,2]],axis=1)).float()
         R = flip @ R
         print('  Flipped')
+    # Step 5: Isaac Sim uses Y-up, rotate Z→Y so floor is XZ plane
+    R_yup = np.array([[1,0,0],[0,0,-1],[0,1,0]])  # Z→Y, Y→-Z
+    p = ckpt['positions'].detach().numpy()
+    ckpt['positions'] = torch.from_numpy((R_yup @ p.T).T).float()
+    q_R = Rot.from_matrix(R_yup).as_quat()
+    rw,rx,ry,rz = q_R[3],q_R[0],q_R[1],q_R[2]
+    qo = ckpt['rotation'].detach().numpy()
+    ckpt['rotation'] = torch.from_numpy(np.stack([
+        rw*qo[:,0]-rx*qo[:,1]-ry*qo[:,2]-rz*qo[:,3],
+        rw*qo[:,1]+rx*qo[:,0]+ry*qo[:,3]-rz*qo[:,2],
+        rw*qo[:,2]-rx*qo[:,3]+ry*qo[:,0]+rz*qo[:,1],
+        rw*qo[:,3]+rx*qo[:,2]-ry*qo[:,1]+rz*qo[:,0]], axis=1)).float()
+    R = R_yup @ R
     pf = ckpt['positions'].detach().numpy()
     for ax,i in [('X',0),('Y',1),('Z',2)]:
         print(f'  {ax}: [{pf[:,i].min():.1f},{pf[:,i].max():.1f}] span={pf[:,i].max()-pf[:,i].min():.1f}')
+    print('  Y-up for Isaac Sim')
 json.dump({'R': R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
 
 for k in list(ckpt.keys()):
