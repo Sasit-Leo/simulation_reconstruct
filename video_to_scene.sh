@@ -359,6 +359,7 @@ pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
 z_axis = pca.components_[np.argmin(pca.explained_variance_)]
 z_axis /= np.linalg.norm(z_axis)
 angle = np.degrees(np.arccos(np.clip(np.dot(z_axis, [0,0,1]), -1, 1)))
+R_zup = np.eye(3); flip = np.eye(3)
 if angle > 2:
     v = np.cross(z_axis, [0,0,1]); s = np.linalg.norm(v); v /= s
     c0 = np.dot(z_axis, [0,0,1])
@@ -373,8 +374,15 @@ if angle > 2:
     top = ((pos_t[:,2]>zh-(zh-zl)*0.2)&(pos_t[:,2]<=zh)).sum()
     if top > bot:
         flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
-        ckpt['positions'] = torch.from_numpy((flip @ pos_t.T).T).float()
+        ckpt['positions'] = torch.from_numpy((flip @ ckpt['positions'].detach().numpy().T).T).float()
         print(f'  Flipped (top={top} > bot={bot})')
+# Isaac Sim Y-up: rotate Z→Y
+R_yup = np.array([[1,0,0],[0,0,-1],[0,1,0]])
+ckpt['positions'] = torch.from_numpy((R_yup @ ckpt['positions'].detach().numpy().T).T).float()
+print('  Z→Y for Isaac Sim')
+R_total = R_yup @ (flip if top > bot else np.eye(3)) @ (R_zup if angle > 2 else np.eye(3))
+import json
+json.dump({'R': R_total.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
 
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
@@ -414,9 +422,10 @@ fi
 # Ground collision — bounding box in original coordinate frame
 # ================================================================================================
 GROUND_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/ground_collision.usda"
+ROTATION_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/rotation.json"
 if [ -f "$SPARSE_DIR/0/points3D.bin" ]; then
     python -c "
-import struct, numpy as np
+import struct, numpy as np, json
 from pxr import Usd, UsdGeom, UsdPhysics, Gf
 
 path = '$SPARSE_DIR/0/points3D.bin'
@@ -428,6 +437,14 @@ with open(path, 'rb') as f:
         pts.append([x,y,z])
         track_len = struct.unpack('<Q', f.read(8))[0]; f.seek(track_len * 8, 1)
 pts = np.array(pts)
+
+# Apply same rotation as visual model
+R = np.eye(3)
+try:
+    rot = json.load(open('$ROTATION_FILE'))
+    R = np.array(rot['R'])
+except: pass
+pts = (R @ pts.T).T
 
 xmin, xmax = np.percentile(pts[:,0], 5), np.percentile(pts[:,0], 95)
 ymin, ymax = np.percentile(pts[:,1], 5), np.percentile(pts[:,1], 95)
