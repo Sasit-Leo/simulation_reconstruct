@@ -353,6 +353,28 @@ for k in ['positions','rotation','scale','density','features_albedo','features_s
     if k in ckpt: ckpt[k] = ckpt[k][keep]
 print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
 
+# PCA Z-up + flip: rotate so height is Z, denser side = floor (bottom)
+from sklearn.decomposition import PCA
+pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
+z_axis = pca.components_[np.argmin(pca.explained_variance_)]
+z_axis /= np.linalg.norm(z_axis)
+angle = np.degrees(np.arccos(np.clip(np.dot(z_axis, [0,0,1]), -1, 1)))
+if angle > 2:
+    v = np.cross(z_axis, [0,0,1]); s = np.linalg.norm(v); v /= s
+    c0 = np.dot(z_axis, [0,0,1])
+    vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
+    R_zup = np.eye(3) + vx + vx @ vx * ((1-c0)/(s*s))
+    pos_t = (R_zup @ ckpt['positions'].detach().numpy().T).T
+    ckpt['positions'] = torch.from_numpy(pos_t).float()
+    print(f'PCA Z-up: rotated {angle:.1f}deg')
+    # Flip: sparser side (ceiling) should be at top
+    zl,zh = np.percentile(pos_t[:,2], 10), np.percentile(pos_t[:,2], 90)
+    bot = ((pos_t[:,2]>=zl)&(pos_t[:,2]<zl+(zh-zl)*0.2)).sum()
+    top = ((pos_t[:,2]>zh-(zh-zl)*0.2)&(pos_t[:,2]<=zh)).sum()
+    if top > bot:
+        flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
+        ckpt['positions'] = torch.from_numpy((flip @ pos_t.T).T).float()
+        print(f'  Flipped (top={top} > bot={bot})')
 
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
