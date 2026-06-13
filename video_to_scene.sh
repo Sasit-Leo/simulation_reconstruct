@@ -10,7 +10,7 @@ VIDEO_PATH=""
 OUTPUT_DIR=""
 EXPERIMENT_NAME=""
 FPS=5
-MAX_IMAGE_SIZE=3200
+MAX_IMAGE_SIZE=1920
 GPU_ID=0
 TRAIN_ITERATIONS=60000
 DOWNSAMPLE_FACTOR=2
@@ -179,7 +179,7 @@ else
         --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" \
         --ImageReader.camera_model SIMPLE_RADIAL --ImageReader.single_camera 1 \
         --FeatureExtraction.use_gpu 1 --SiftExtraction.max_image_size "$MAX_IMAGE_SIZE" \
-        --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.002 \
+        --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.0033 \
         --SiftExtraction.edge_threshold 10 --SiftExtraction.num_octaves 5 --SiftExtraction.estimate_affine_shape 1 \
         --SiftExtraction.domain_size_pooling 0 2>&1 | tail -2
 
@@ -276,8 +276,7 @@ else
         "render.particle_radiance_sph_degree=4" \
         "model.progressive_training.max_n_features=4" \
         "model.progressive_training.increase_frequency=500" \
-        "optimizer.params.features_albedo.lr=0.0025" \
-        "optimizer.params.features_specular.lr=0.000125" \
+        "optimizer.params.features_specular.lr=0.001" \
         "loss.use_l2=true" "loss.lambda_l2=0.3" \
         "strategy.density_decay.start_iteration=500" "strategy.density_decay.end_iteration=60000" \
         "strategy.prune_scale.start_iteration=500" "strategy.prune_scale.end_iteration=30000" \
@@ -353,111 +352,7 @@ if cnt:
 for k in ['positions','rotation','scale','density','features_albedo','features_specular']:
     if k in ckpt: ckpt[k] = ckpt[k][keep]
 print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
-# 4. Manhattan rotation: rectangular room -> Z-up -> flip -> Y-up (Isaac Sim)
-from sklearn.decomposition import PCA
-from scipy.spatial.transform import Rotation as Rot
-import json
-def apply_rot(positions, quats, R_mat):
-    new_pos = torch.from_numpy((R_mat @ positions.detach().numpy().T).T).float()
-    q_R = Rot.from_matrix(R_mat).as_quat()
-    rw,rx,ry,rz = q_R[3],q_R[0],q_R[1],q_R[2]
-    qo = quats.detach().numpy()
-    nw = rw*qo[:,0]-rx*qo[:,1]-ry*qo[:,2]-rz*qo[:,3]
-    nx = rw*qo[:,1]+rx*qo[:,0]+ry*qo[:,3]-rz*qo[:,2]
-    ny = rw*qo[:,2]-rx*qo[:,3]+ry*qo[:,0]+rz*qo[:,1]
-    nz = rw*qo[:,3]+rx*qo[:,2]-ry*qo[:,1]+rz*qo[:,0]
-    new_quats = torch.from_numpy(np.stack([nw,nx,ny,nz],axis=1)).float()
-    return new_pos, new_quats
 
-R = np.eye(3)
-pca = PCA(n_components=3).fit(ckpt["positions"].detach().numpy())
-comps = pca.components_.copy(); var = pca.explained_variance_.copy()
-order = np.argsort(var)
-z_axis = comps[order[0]]; z_axis /= np.linalg.norm(z_axis)
-x_axis = comps[order[2]]; x_axis /= np.linalg.norm(x_axis)
-if np.dot(z_axis, [0,0,1]) < 0: z_axis = -z_axis
-if np.dot(x_axis, [1,0,0]) < 0: x_axis = -x_axis
-y_axis = np.cross(z_axis, x_axis); y_axis /= np.linalg.norm(y_axis)
-R_zup = np.column_stack([x_axis, y_axis, z_axis]).T
-angle = np.degrees(np.arccos(np.clip(np.dot(z_axis, [0,0,1]), -1, 1)))
-print(f'Manhattan: Z-up angle={angle:.1f}deg')
-if angle > 2:
-    ckpt["positions"], ckpt["rotation"] = apply_rot(ckpt["positions"], ckpt["rotation"], R_zup)
-    R = R_zup
-    p = ckpt["positions"].detach().numpy()
-    zl,zh = np.percentile(p[:,2],10), np.percentile(p[:,2],90)
-    bot = ((p[:,2]>=zl)&(p[:,2]<zl+(zh-zl)*0.2)).sum()
-    top = ((p[:,2]>zh-(zh-zl)*0.2)&(p[:,2]<=zh)).sum()
-    if top > bot:
-        flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
-        ckpt["positions"], ckpt["rotation"] = apply_rot(ckpt["positions"], ckpt["rotation"], flip)
-        R = flip @ R
-        print('  Flipped upright')
-R_yup = np.array([[1,0,0],[0,0,-1],[0,1,0]])
-ckpt["positions"], ckpt["rotation"] = apply_rot(ckpt["positions"], ckpt["rotation"], R_yup)
-R = R_yup @ R
-pf = ckpt["positions"].detach().numpy()
-for ax,i in [("X",0),("Y",1),("Z",2)]:
-    print(f'  {ax}: [{pf[:,i].min():.1f},{pf[:,i].max():.1f}] span={pf[:,i].max()-pf[:,i].min():.1f}')
-print('  Isaac Sim Y-up')
-json.dump({"R": R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
-
-# 4. Manhattan rotation: rectangular room prior on cleaned Gaussians
-from sklearn.decomposition import PCA
-from scipy.spatial.transform import Rotation as Rot
-import json
-R = np.eye(3)
-pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
-comps = pca.components_.copy(); var = pca.explained_variance_.copy()
-order = np.argsort(var)
-z_axis = comps[order[0]]; z_axis /= np.linalg.norm(z_axis)
-x_axis = comps[order[2]]; x_axis /= np.linalg.norm(x_axis)
-if np.dot(z_axis, [0,0,1]) < 0: z_axis = -z_axis
-if np.dot(x_axis, [1,0,0]) < 0: x_axis = -x_axis
-y_axis = np.cross(z_axis, x_axis); y_axis /= np.linalg.norm(y_axis)
-R = np.column_stack([x_axis, y_axis, z_axis]).T
-angle = np.degrees(np.arccos(np.clip(np.dot(z_axis, [0,0,1]), -1, 1)))
-print(f'Manhattan: height→Z angle={angle:.1f}deg')
-if angle > 2:
-    pos_t = (R @ ckpt['positions'].detach().numpy().T).T
-    ckpt['positions'] = torch.from_numpy(pos_t).float()
-    q_R = Rot.from_matrix(R).as_quat()
-    rw,rx,ry,rz = q_R[3],q_R[0],q_R[1],q_R[2]
-    qo = ckpt['rotation'].detach().numpy()
-    ckpt['rotation'] = torch.from_numpy(np.stack([
-        rw*qo[:,0]-rx*qo[:,1]-ry*qo[:,2]-rz*qo[:,3],
-        rw*qo[:,1]+rx*qo[:,0]+ry*qo[:,3]-rz*qo[:,2],
-        rw*qo[:,2]-rx*qo[:,3]+ry*qo[:,0]+rz*qo[:,1],
-        rw*qo[:,3]+rx*qo[:,2]-ry*qo[:,1]+rz*qo[:,0]], axis=1)).float()
-    p = ckpt['positions'].detach().numpy()
-    zl,zh = np.percentile(p[:,2],10), np.percentile(p[:,2],90)
-    bot = ((p[:,2]>=zl)&(p[:,2]<zl+(zh-zl)*0.2)).sum()
-    top = ((p[:,2]>zh-(zh-zl)*0.2)&(p[:,2]<=zh)).sum()
-    if top > bot:
-        flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
-        ckpt['positions'] = torch.from_numpy((flip @ p.T).T).float()
-        qo = ckpt['rotation'].detach().numpy()
-        ckpt['rotation'] = torch.from_numpy(np.stack([-qo[:,1],qo[:,0],-qo[:,3],qo[:,2]],axis=1)).float()
-        R = flip @ R
-        print('  Flipped')
-    # Step 5: Isaac Sim uses Y-up, rotate Z→Y so floor is XZ plane
-    R_yup = np.array([[1,0,0],[0,0,-1],[0,1,0]])  # Z→Y, Y→-Z
-    p = ckpt['positions'].detach().numpy()
-    ckpt['positions'] = torch.from_numpy((R_yup @ p.T).T).float()
-    q_R = Rot.from_matrix(R_yup).as_quat()
-    rw,rx,ry,rz = q_R[3],q_R[0],q_R[1],q_R[2]
-    qo = ckpt['rotation'].detach().numpy()
-    ckpt['rotation'] = torch.from_numpy(np.stack([
-        rw*qo[:,0]-rx*qo[:,1]-ry*qo[:,2]-rz*qo[:,3],
-        rw*qo[:,1]+rx*qo[:,0]+ry*qo[:,3]-rz*qo[:,2],
-        rw*qo[:,2]-rx*qo[:,3]+ry*qo[:,0]+rz*qo[:,1],
-        rw*qo[:,3]+rx*qo[:,2]-ry*qo[:,1]+rz*qo[:,0]], axis=1)).float()
-    R = R_yup @ R
-    pf = ckpt['positions'].detach().numpy()
-    for ax,i in [('X',0),('Y',1),('Z',2)]:
-        print(f'  {ax}: [{pf[:,i].min():.1f},{pf[:,i].max():.1f}] span={pf[:,i].max()-pf[:,i].min():.1f}')
-    print('  Y-up for Isaac Sim')
-json.dump({'R': R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
 
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
@@ -497,10 +392,9 @@ fi
 # Ground collision — bounding box in original coordinate frame
 # ================================================================================================
 GROUND_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/ground_collision.usda"
-ROTATION_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/rotation.json"
 if [ -f "$SPARSE_DIR/0/points3D.bin" ]; then
     python -c "
-import struct, numpy as np, json
+import struct, numpy as np
 from pxr import Usd, UsdGeom, UsdPhysics, Gf
 
 path = '$SPARSE_DIR/0/points3D.bin'
@@ -513,13 +407,6 @@ with open(path, 'rb') as f:
         track_len = struct.unpack('<Q', f.read(8))[0]; f.seek(track_len * 8, 1)
 pts = np.array(pts)
 
-# Apply same rotation as visual model
-R = np.eye(3)
-try:
-    rot = json.load(open('$ROTATION_FILE'))
-    R = np.array(rot['R'])
-except: pass
-pts = (R @ pts.T).T
 xmin, xmax = np.percentile(pts[:,0], 5), np.percentile(pts[:,0], 95)
 ymin, ymax = np.percentile(pts[:,1], 5), np.percentile(pts[:,1], 95)
 zmin, zmax = np.percentile(pts[:,2], 5), np.percentile(pts[:,2], 95)
