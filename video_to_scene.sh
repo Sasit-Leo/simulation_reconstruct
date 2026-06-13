@@ -353,36 +353,44 @@ for k in ['positions','rotation','scale','density','features_albedo','features_s
     if k in ckpt: ckpt[k] = ckpt[k][keep]
 print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
 
-# PCA Z-up + flip: rotate so height is Z, denser side = floor (bottom)
+# Rotation: PCA height→Z → flip → Y-up (Isaac Sim)
+# Room is rectangular: smallest PCA axis = height, largest = longest wall
 from sklearn.decomposition import PCA
+import json
 pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
-z_axis = pca.components_[np.argmin(pca.explained_variance_)]
-z_axis /= np.linalg.norm(z_axis)
+comps = pca.components_.copy(); var = pca.explained_variance_.copy()
+order = np.argsort(var)  # [height, mid, longest]
+z_axis = comps[order[0]]; z_axis /= np.linalg.norm(z_axis)
+x_axis = comps[order[2]]; x_axis /= np.linalg.norm(x_axis)
+# Ensure right-handed: Z points toward positive-Z hemisphere, X toward positive-X
+if z_axis[2] < 0: z_axis = -z_axis
+if x_axis[0] < 0: x_axis = -x_axis
+y_axis = np.cross(z_axis, x_axis); y_axis /= np.linalg.norm(y_axis)
+R_zup = np.column_stack([x_axis, y_axis, z_axis]).T
 angle = np.degrees(np.arccos(np.clip(np.dot(z_axis, [0,0,1]), -1, 1)))
-R_zup = np.eye(3); flip = np.eye(3)
+
+R = np.eye(3)
 if angle > 2:
-    v = np.cross(z_axis, [0,0,1]); s = np.linalg.norm(v); v /= s
-    c0 = np.dot(z_axis, [0,0,1])
-    vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
-    R_zup = np.eye(3) + vx + vx @ vx * ((1-c0)/(s*s))
-    pos_t = (R_zup @ ckpt['positions'].detach().numpy().T).T
-    ckpt['positions'] = torch.from_numpy(pos_t).float()
-    print(f'PCA Z-up: rotated {angle:.1f}deg')
-    # Flip: sparser side (ceiling) should be at top
-    zl,zh = np.percentile(pos_t[:,2], 10), np.percentile(pos_t[:,2], 90)
-    bot = ((pos_t[:,2]>=zl)&(pos_t[:,2]<zl+(zh-zl)*0.2)).sum()
-    top = ((pos_t[:,2]>zh-(zh-zl)*0.2)&(pos_t[:,2]<=zh)).sum()
+    p = (R_zup @ ckpt['positions'].detach().numpy().T).T
+    ckpt['positions'] = torch.from_numpy(p).float()
+    R = R_zup
+    print(f'Z-up: {angle:.1f}deg')
+    # Flip: denser 20% band should be at bottom (floor)
+    zl,zh = np.percentile(p[:,2], 10), np.percentile(p[:,2], 90)
+    bot = ((p[:,2]>=zl)&(p[:,2]<zl+(zh-zl)*0.2)).sum()
+    top = ((p[:,2]>zh-(zh-zl)*0.2)&(p[:,2]<=zh)).sum()
     if top > bot:
         flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
-        ckpt['positions'] = torch.from_numpy((flip @ ckpt['positions'].detach().numpy().T).T).float()
-        print(f'  Flipped (top={top} > bot={bot})')
-# Isaac Sim Y-up: rotate Z→Y
+        ckpt['positions'] = torch.from_numpy((flip @ p.T).T).float()
+        R = flip @ R
+        print(f'  Flip (top={top} > bot={bot})')
+
+# Y-up for Isaac Sim
 R_yup = np.array([[1,0,0],[0,0,-1],[0,1,0]])
 ckpt['positions'] = torch.from_numpy((R_yup @ ckpt['positions'].detach().numpy().T).T).float()
-print('  Z→Y for Isaac Sim')
-R_total = R_yup @ (flip if top > bot else np.eye(3)) @ (R_zup if angle > 2 else np.eye(3))
-import json
-json.dump({'R': R_total.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
+R = R_yup @ R
+print(f'  Y-up ✓')
+json.dump({'R': R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
 
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
