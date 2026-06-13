@@ -353,6 +353,54 @@ if cnt:
 for k in ['positions','rotation','scale','density','features_albedo','features_specular']:
     if k in ckpt: ckpt[k] = ckpt[k][keep]
 print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
+# 4. Manhattan rotation: rectangular room -> Z-up -> flip -> Y-up (Isaac Sim)
+from sklearn.decomposition import PCA
+from scipy.spatial.transform import Rotation as Rot
+import json
+def apply_rot(positions, quats, R_mat):
+    new_pos = torch.from_numpy((R_mat @ positions.detach().numpy().T).T).float()
+    q_R = Rot.from_matrix(R_mat).as_quat()
+    rw,rx,ry,rz = q_R[3],q_R[0],q_R[1],q_R[2]
+    qo = quats.detach().numpy()
+    nw = rw*qo[:,0]-rx*qo[:,1]-ry*qo[:,2]-rz*qo[:,3]
+    nx = rw*qo[:,1]+rx*qo[:,0]+ry*qo[:,3]-rz*qo[:,2]
+    ny = rw*qo[:,2]-rx*qo[:,3]+ry*qo[:,0]+rz*qo[:,1]
+    nz = rw*qo[:,3]+rx*qo[:,2]-ry*qo[:,1]+rz*qo[:,0]
+    new_quats = torch.from_numpy(np.stack([nw,nx,ny,nz],axis=1)).float()
+    return new_pos, new_quats
+
+R = np.eye(3)
+pca = PCA(n_components=3).fit(ckpt["positions"].detach().numpy())
+comps = pca.components_.copy(); var = pca.explained_variance_.copy()
+order = np.argsort(var)
+z_axis = comps[order[0]]; z_axis /= np.linalg.norm(z_axis)
+x_axis = comps[order[2]]; x_axis /= np.linalg.norm(x_axis)
+if np.dot(z_axis, [0,0,1]) < 0: z_axis = -z_axis
+if np.dot(x_axis, [1,0,0]) < 0: x_axis = -x_axis
+y_axis = np.cross(z_axis, x_axis); y_axis /= np.linalg.norm(y_axis)
+R_zup = np.column_stack([x_axis, y_axis, z_axis]).T
+angle = np.degrees(np.arccos(np.clip(np.dot(z_axis, [0,0,1]), -1, 1)))
+print(f'Manhattan: Z-up angle={angle:.1f}deg')
+if angle > 2:
+    ckpt["positions"], ckpt["rotation"] = apply_rot(ckpt["positions"], ckpt["rotation"], R_zup)
+    R = R_zup
+    p = ckpt["positions"].detach().numpy()
+    zl,zh = np.percentile(p[:,2],10), np.percentile(p[:,2],90)
+    bot = ((p[:,2]>=zl)&(p[:,2]<zl+(zh-zl)*0.2)).sum()
+    top = ((p[:,2]>zh-(zh-zl)*0.2)&(p[:,2]<=zh)).sum()
+    if top > bot:
+        flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
+        ckpt["positions"], ckpt["rotation"] = apply_rot(ckpt["positions"], ckpt["rotation"], flip)
+        R = flip @ R
+        print('  Flipped upright')
+R_yup = np.array([[1,0,0],[0,0,-1],[0,1,0]])
+ckpt["positions"], ckpt["rotation"] = apply_rot(ckpt["positions"], ckpt["rotation"], R_yup)
+R = R_yup @ R
+pf = ckpt["positions"].detach().numpy()
+for ax,i in [("X",0),("Y",1),("Z",2)]:
+    print(f'  {ax}: [{pf[:,i].min():.1f},{pf[:,i].max():.1f}] span={pf[:,i].max()-pf[:,i].min():.1f}')
+print('  Isaac Sim Y-up')
+json.dump({"R": R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
 
 # 4. Manhattan rotation: rectangular room prior on cleaned Gaussians
 from sklearn.decomposition import PCA
