@@ -497,9 +497,10 @@ fi
 # Ground collision — bounding box in original coordinate frame
 # ================================================================================================
 GROUND_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/ground_collision.usda"
+ROTATION_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/rotation.json"
 if [ -f "$SPARSE_DIR/0/points3D.bin" ]; then
     python -c "
-import struct, numpy as np
+import struct, numpy as np, json
 from pxr import Usd, UsdGeom, UsdPhysics, Gf
 
 path = '$SPARSE_DIR/0/points3D.bin'
@@ -512,7 +513,13 @@ with open(path, 'rb') as f:
         track_len = struct.unpack('<Q', f.read(8))[0]; f.seek(track_len * 8, 1)
 pts = np.array(pts)
 
-# Points already in COLMAP coordinate frame — use directly
+# Apply same rotation as visual model
+R = np.eye(3)
+try:
+    rot = json.load(open('$ROTATION_FILE'))
+    R = np.array(rot['R'])
+except: pass
+pts = (R @ pts.T).T
 xmin, xmax = np.percentile(pts[:,0], 5), np.percentile(pts[:,0], 95)
 ymin, ymax = np.percentile(pts[:,1], 5), np.percentile(pts[:,1], 95)
 zmin, zmax = np.percentile(pts[:,2], 5), np.percentile(pts[:,2], 95)
