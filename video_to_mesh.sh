@@ -500,13 +500,12 @@ else
     err "未找到 TSDF 输出网格"
 fi
 
-    log "  ◈ Z-up 对齐..."
-# Z-axis alignment: rotate mesh to align floor plane with world Z-up
+    log "  ◈ Manhattan 对齐 + Z-up..."
+# Manhattan rotation from COLMAP points + Y-up for Isaac Sim
 if [ -f "$MESH_OUT" ] && [ -f "$SPARSE_DIR/0/points3D.bin" ]; then
     python -c "
-import struct, numpy as np, trimesh
-from sklearn.linear_model import RANSACRegressor
-from scipy.spatial import ConvexHull
+import struct, numpy as np, trimesh, json
+from sklearn.decomposition import PCA
 
 path = '$SPARSE_DIR/0/points3D.bin'
 pts = []
@@ -518,47 +517,33 @@ with open(path, 'rb') as f:
         track_len = struct.unpack('<Q', f.read(8))[0]; f.seek(track_len * 8, 1)
 pts = np.array(pts)
 
-# Find top-k planes by area, pick the one closest to horizontal → floor
-candidates = []
-remaining = np.ones(len(pts), dtype=bool)
-for _ in range(5):
-    if remaining.sum() < 100: break
-    p = pts[remaining]
-    r = RANSACRegressor(residual_threshold=0.2, max_trials=500)
-    r.fit(np.column_stack([p[:,0], p[:,1]]), p[:,2])
-    a,b = r.estimator_.coef_
-    normal = np.array([-a, -b, 1.0]); normal /= np.linalg.norm(normal)
-    inliers = r.inlier_mask_
-    remaining[remaining] = ~inliers
-    pi = p[inliers]
-    if len(pi) > 50:
-        try:
-            area = ConvexHull(pi[:, :2]).volume
-            angle = np.degrees(np.arccos(np.clip(np.dot(normal, [0,0,1]), -1, 1)))
-            candidates.append({'normal': normal, 'area': area, 'angle': angle})
-        except: pass
+# Manhattan: PCA on COLMAP points → Z-up then Y-up
+pca = PCA(n_components=3).fit(pts)
+comps = pca.components_.copy(); var = pca.explained_variance_.copy()
+order = np.argsort(var)
+z_axis = comps[order[0]]; z_axis /= np.linalg.norm(z_axis)
+x_axis = comps[order[2]]; x_axis /= np.linalg.norm(x_axis)
+if np.dot(z_axis, [0,0,1]) < 0: z_axis = -z_axis
+if np.dot(x_axis, [1,0,0]) < 0: x_axis = -x_axis
+y_axis = np.cross(z_axis, x_axis); y_axis /= np.linalg.norm(y_axis)
+R_zup = np.column_stack([x_axis, y_axis, z_axis]).T
+angle = np.degrees(np.arccos(np.clip(np.dot(z_axis, [0,0,1]), -1, 1)))
+print(f'Manhattan: Z-up angle={angle:.1f}deg')
+R = R_zup if angle > 2 else np.eye(3)
 
-# Among top-3 by area, pick the one with smallest Z-angle (most horizontal = floor)
-candidates.sort(key=lambda x: -x['area'])
-top_k = candidates[:min(3, len(candidates))]
-best = min(top_k, key=lambda x: x['angle'])
-best_normal = best['normal']
-angle = best['angle']
-print('Floor plane: area={:.0f}m2, angle={:.1f}deg (among top-{})'.format(best['area'], angle, len(top_k)))
-for c in top_k:
-    print('  candidate: area={:.0f}m2, angle={:.1f}deg'.format(c['area'], c['angle']))
+# Y-up for Isaac Sim
+R_yup = np.array([[1,0,0],[0,0,-1],[0,1,0]])
+R = R_yup @ R
 
-if best_normal is not None:
-    if angle > 2:
-        v = np.cross(best_normal, [0,0,1]); s = np.linalg.norm(v)
-        v /= s; c0 = np.dot(best_normal, [0,0,1])
-        vx = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
-        R = np.eye(3) + vx + vx @ vx * ((1-c0)/(s*s))
-        mesh = trimesh.load('$MESH_OUT')
-        mesh.vertices = (R @ mesh.vertices.T).T
-        mesh.export('$MESH_OUT')
-        print('Mesh rotated {:.1f}deg to Z-up'.format(angle))
-" 2>&1 && log "  ◈ Z-up 对齐完成"
+# Apply to mesh
+mesh = trimesh.load('$MESH_OUT')
+mesh.vertices = (R @ mesh.vertices.T).T
+mesh.export('$MESH_OUT')
+print(f'Mesh rotated to Isaac Sim Y-up')
+
+# Save rotation for ground collision
+json.dump({'R': R.tolist()}, open('${TWODGS_OUT}/rotation.json', 'w'))
+" 2>&1 && log "  ◈ Manhattan 对齐完成"
 fi
 
     log "  ◈ 几何优化..."
