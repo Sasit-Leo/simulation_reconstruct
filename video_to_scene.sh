@@ -21,7 +21,7 @@ SKIP_TRAINING=false
 SKIP_CLAHE=true
 
 CONDA_ENV="vid2sim"
-THREEDGRUT_DIR="$(cd "$(dirname "$0")" && pwd)/3dgrut"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"; THREEDGRUT_DIR="$PROJECT_DIR/3dgrut"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 log()    { echo -e "${GREEN}[*]${NC} $(date '+%H:%M:%S') $*"; }
@@ -353,44 +353,19 @@ for k in ['positions','rotation','scale','density','features_albedo','features_s
     if k in ckpt: ckpt[k] = ckpt[k][keep]
 print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
 
-# Rotation: PCA height→Z → flip → Y-up (Isaac Sim)
-# Room is rectangular: smallest PCA axis = height, largest = longest wall
-from sklearn.decomposition import PCA
-import json
-pca = PCA(n_components=3).fit(ckpt['positions'].detach().numpy())
-comps = pca.components_.copy(); var = pca.explained_variance_.copy()
-order = np.argsort(var)  # [height, mid, longest]
-z_axis = comps[order[0]]; z_axis /= np.linalg.norm(z_axis)
-x_axis = comps[order[2]]; x_axis /= np.linalg.norm(x_axis)
-# Ensure right-handed: Z points toward positive-Z hemisphere, X toward positive-X
-if z_axis[2] < 0: z_axis = -z_axis
-if x_axis[0] < 0: x_axis = -x_axis
-y_axis = np.cross(z_axis, x_axis); y_axis /= np.linalg.norm(y_axis)
-R_zup = np.column_stack([x_axis, y_axis, z_axis]).T
-angle = np.degrees(np.arccos(np.clip(np.dot(z_axis, [0,0,1]), -1, 1)))
+# Rotation: PCA → Z-up → flip → Y-up (Isaac Sim) — uses shared align_to_isaac module
+import sys, json
+sys.path.insert(0, '$PROJECT_DIR/utils')
+from align_to_isaac import compute_manhattan_rotation, apply_rotation_to_tensor, save_rotation_json
 
-R = np.eye(3)
-if angle > 2:
-    p = (R_zup @ ckpt['positions'].detach().numpy().T).T
-    ckpt['positions'] = torch.from_numpy(p).float()
-    R = R_zup
-    print(f'Z-up: {angle:.1f}deg')
-    # Flip: denser 20% band should be at bottom (floor)
-    zl,zh = np.percentile(p[:,2], 10), np.percentile(p[:,2], 90)
-    bot = ((p[:,2]>=zl)&(p[:,2]<zl+(zh-zl)*0.2)).sum()
-    top = ((p[:,2]>zh-(zh-zl)*0.2)&(p[:,2]<=zh)).sum()
-    if top > bot:
-        flip = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
-        ckpt['positions'] = torch.from_numpy((flip @ p.T).T).float()
-        R = flip @ R
-        print(f'  Flip (top={top} > bot={bot})')
-
-# Y-up for Isaac Sim
-R_yup = np.array([[1,0,0],[0,0,-1],[0,1,0]])
-ckpt['positions'] = torch.from_numpy((R_yup @ ckpt['positions'].detach().numpy().T).T).float()
-R = R_yup @ R
-print(f'  Y-up ✓')
-json.dump({'R': R.tolist()}, open('${TRAIN_OUTDIR}/rotation.json', 'w'))
+pos = ckpt['positions'].detach().numpy()
+result = compute_manhattan_rotation(pos, do_flip_check=True)
+R = result['R']
+ckpt['positions'] = apply_rotation_to_tensor(ckpt['positions'], R)
+print(f'Z-up: {result[\"angle_deg\"]:.1f}deg, flipped={result[\"flipped\"]}, Y-up OK')
+if result['flipped']:
+    print(f'  Flip (top={result[\"flip_top_count\"]} > bot={result[\"flip_bot_count\"]})')
+save_rotation_json(R, '${TRAIN_OUTDIR}/rotation.json')
 
 for k in list(ckpt.keys()):
     if isinstance(ckpt[k], torch.Tensor) and not isinstance(ckpt[k], torch.nn.Parameter):
@@ -405,13 +380,11 @@ torch.save(ckpt, '$CKPT_CLEAN')
             --no-transform --no-cameras --no-background 2>&1 | tail -2
         [ -f "$USDZ_FILE" ] && log "USDZ: $USDZ_FILE ($(du -h "$USDZ_FILE" | cut -f1))"
 
-        # Combined scene (Gaussians + ground)
+        # Combined scene (Gaussians + ground) — uses shared module
         python -c "
-from pxr import Usd
-stage = Usd.Stage.CreateNew('${TRAIN_OUTDIR}/scene_combined.usda')
-stage.GetRootLayer().subLayerPaths = ['./scene_nurec.usdz', './ground_collision.usda']
-stage.SetDefaultPrim(stage.DefinePrim('/World', 'Xform'))
-stage.GetRootLayer().Save()
+import sys; sys.path.insert(0, '$PROJECT_DIR/utils')
+from align_to_isaac import export_combined_scene_usda
+export_combined_scene_usda('${TRAIN_OUTDIR}/scene_combined.usda', './scene_nurec.usdz', './ground_collision.usda')
 " 2>&1
         log "组合场景: ${TRAIN_OUTDIR}/scene_combined.usda"
 
@@ -433,43 +406,14 @@ GROUND_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/ground_collision.usda"
 ROTATION_FILE="${TRAIN_OUTDIR:-$RUNS_DIR/$EXPERIMENT_NAME}/rotation.json"
 if [ -f "$SPARSE_DIR/0/points3D.bin" ]; then
     python -c "
-import struct, numpy as np, json
-from pxr import Usd, UsdGeom, UsdPhysics, Gf
+import sys; sys.path.insert(0, '$PROJECT_DIR/utils')
+from align_to_isaac import load_colmap_points, load_rotation_json, export_ground_collision_usda
+import numpy as np
 
-path = '$SPARSE_DIR/0/points3D.bin'
-pts = []
-with open(path, 'rb') as f:
-    n = struct.unpack('<Q', f.read(8))[0]
-    for _ in range(n):
-        data = f.read(43); x,y,z = struct.unpack_from('<ddd', data, 8)
-        pts.append([x,y,z])
-        track_len = struct.unpack('<Q', f.read(8))[0]; f.seek(track_len * 8, 1)
-pts = np.array(pts)
-
-# Apply same rotation as visual model
-R = np.eye(3)
-try:
-    rot = json.load(open('$ROTATION_FILE'))
-    R = np.array(rot['R'])
-except: pass
-pts = (R @ pts.T).T
-
-xmin, xmax = np.percentile(pts[:,0], 5), np.percentile(pts[:,0], 95)
-ymin, ymax = np.percentile(pts[:,1], 5), np.percentile(pts[:,1], 95)
-zmin, zmax = np.percentile(pts[:,2], 5), np.percentile(pts[:,2], 95)
-cx = (xmin + xmax) / 2; cy = (ymin + ymax) / 2
-w = (xmax - xmin) + 4.0; d = (ymax - ymin) + 4.0
-
-stage = Usd.Stage.CreateNew('$GROUND_FILE')
-UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-ground = UsdGeom.Cube.Define(stage, '/World/ground')
-ground.AddScaleOp().Set(Gf.Vec3f(w/2, d/2, 0.02))
-ground.AddTranslateOp().Set(Gf.Vec3f(cx, cy, zmin))
-UsdPhysics.CollisionAPI.Apply(ground.GetPrim())
-body = UsdPhysics.RigidBodyAPI.Apply(ground.GetPrim())
-body.CreateKinematicEnabledAttr().Set(True)
-stage.GetRootLayer().Save()
-print(f'Ground: {w:.1f}x{d:.1f}m at Z={zmin:.2f}')
+pts = load_colmap_points('$SPARSE_DIR/0/points3D.bin')
+R = load_rotation_json('$ROTATION_FILE')
+pts_rotated = (R @ pts.T).T
+export_ground_collision_usda(pts_rotated, '$GROUND_FILE')
 " 2>&1 && log "地面碰撞: $GROUND_FILE"
 fi
 # Done

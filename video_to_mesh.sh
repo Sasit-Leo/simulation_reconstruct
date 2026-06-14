@@ -7,7 +7,7 @@ VIDEO_PATH=""; OUTPUT_DIR=""; EXPERIMENT_NAME=""
 FPS=5; MAX_IMAGE_SIZE=1920; GPU_ID=0; TRAIN_ITERATIONS=60000; DOWNSAMPLE_FACTOR=2
 SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false; SKIP_USDZ=false; SKIP_CLAHE=true
 VISUAL_FILTER=false  # -V: interactive point cloud crop before training
-CONDA_ENV="vid2sim"; TWODGS_DIR="$(cd "$(dirname "$0")" && pwd)/2dgs"
+CONDA_ENV="vid2sim"; PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"; TWODGS_DIR="$PROJECT_DIR/2dgs"
 CULL_FACTOR=1.5   # IQR multiplier for spatial culling (larger = looser)
 VOXEL_SIZE=0.004  # TSDF voxel — 4mm, 2cm gap = 5 voxels
 
@@ -87,7 +87,7 @@ IMAGE_DIR="$OUTPUT_DIR/images"
 if [ "$SKIP_FFMPEG" = true ]; then
     step "Step 1/4: 跳过 FFmpeg"
     [ ! -d "$IMAGE_DIR" ] && { err "图片目录不存在: $IMAGE_DIR"; exit 1; }
-    FRAME_COUNT=$(find "$IMAGE_DIR" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.png' \) | wc -l)
+    FRAME_COUNT=$(find "$IMAGE_DIR" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) | wc -l)
 else
     step "Step 1/4: 抽帧 (FPS=$FPS)"
     rm -rf "$IMAGE_DIR" && mkdir -p "$IMAGE_DIR"
@@ -99,8 +99,8 @@ else
 fi
 log "图片: $FRAME_COUNT 帧"
 
-# CLAHE 对比度增强
-if [ "$SKIP_FFMPEG" = false ]; then
+# CLAHE 对比度增强 — 金属/透明表面特征更明显
+if [ "$SKIP_FFMPEG" = false ] || [ "$FRAME_COUNT" -gt 0 ]; then
     CLAHE_FLAG="${IMAGE_DIR}/.clahe_done"
     if [ "$SKIP_CLAHE" = true ]; then
         touch "$CLAHE_FLAG" 2>/dev/null || true
@@ -108,12 +108,16 @@ if [ "$SKIP_FFMPEG" = false ]; then
     elif [ ! -f "$CLAHE_FLAG" ]; then
         log "CLAHE 增强..."
         python -c "
-import cv2; from pathlib import Path
+import cv2
+from pathlib import Path
 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
 for p in sorted(Path('$IMAGE_DIR').glob('*.jpg')):
-    img = cv2.imread(str(p)); lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l,a,b = cv2.split(lab); l = clahe.apply(l)
-    cv2.imwrite(str(p), cv2.cvtColor(cv2.merge([l,a,b]), cv2.COLOR_LAB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 95])
+    img = cv2.imread(str(p))
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = clahe.apply(l)
+    cv2.imwrite(str(p), cv2.cvtColor(cv2.merge([l,a,b]), cv2.COLOR_LAB2BGR),
+                [cv2.IMWRITE_JPEG_QUALITY, 95])
 print(f'{sum(1 for _ in Path(\"$IMAGE_DIR\").glob(\"*.jpg\"))} images')
 " 2>&1 && touch "$CLAHE_FLAG" && log "CLAHE 完成"
     fi
@@ -126,8 +130,8 @@ if [ "$DOWNSAMPLE_FACTOR" -gt 1 ]; then
         log "生成 ${DOWNSAMPLED_DIR} ..."
         mkdir -p "$DOWNSAMPLED_DIR"
         python -c "
-from PIL import Image; from pathlib import Path
 import torch, torchvision.transforms.functional as TF
+from PIL import Image; from pathlib import Path
 src,dst,f = Path('$IMAGE_DIR'), Path('$DOWNSAMPLED_DIR'), $DOWNSAMPLE_FACTOR
 jpgs = sorted(src.glob('*.jpg')) + sorted(src.glob('*.png'))
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -136,6 +140,7 @@ for p in jpgs:
     h, w = img.shape[2], img.shape[3]
     img = TF.resize(img, [h//f, w//f], antialias=True)
     TF.to_pil_image(img.squeeze(0).cpu()).save(dst/p.name, quality=95)
+print(f'{len(jpgs)} images')
 " || { err "降采样失败"; exit 1; }
     fi
 fi
@@ -158,7 +163,7 @@ else
         --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" \
         --ImageReader.camera_model SIMPLE_RADIAL --ImageReader.single_camera 1 \
         --FeatureExtraction.use_gpu 1 --SiftExtraction.max_image_size "$MAX_IMAGE_SIZE" \
-        --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.002 \
+        --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.0033 \
         --SiftExtraction.edge_threshold 10 --SiftExtraction.num_octaves 5 --SiftExtraction.estimate_affine_shape 1 \
         --SiftExtraction.domain_size_pooling 0 2>&1 | tail -2
 
@@ -167,7 +172,7 @@ else
     colmap sequential_matcher \
         --database_path "$DATABASE_PATH" --FeatureMatching.use_gpu 1 --FeatureMatching.max_num_matches 65536 \
         --SiftMatching.max_ratio 0.7 --SiftMatching.max_distance 0.5 --SiftMatching.cross_check 1 \
-        --SequentialMatching.overlap 10 2>&1 | tail -2
+        --SequentialMatching.overlap 5 2>&1 | tail -2
 
     mkdir -p "$SPARSE_DIR"
 
@@ -211,10 +216,10 @@ print(best_dir.rstrip('/') if best_n > 0 else '')
         log "注册 $NUM_IMAGES_REG/$FRAME_COUNT 帧 ($(python -c "print(f'{$REG_RATIO*100:.0f}')")%)"
 
         if python -c "exit(0 if $REG_RATIO >= $REG_THRESHOLD else 1)"; then
-            log "注册率达标 (≥${REG_THRESHOLD//0./}%)，继续训练"
+            log "注册率达标 (≥50%)，继续训练"
             break
         fi
-        warn "注册率 < ${REG_THRESHOLD//0./}%，重试..."
+        warn "注册率 < 50%，重试..."
     done
 
     if [ ! -f "$SPARSE_DIR/0/cameras.bin" ] || [ ! -f "$SPARSE_DIR/0/images.bin" ]; then
@@ -222,7 +227,7 @@ print(best_dir.rstrip('/') if best_n > 0 else '')
         exit 1
     fi
     if python -c "exit(0 if $REG_RATIO < $REG_THRESHOLD else 1)"; then
-        warn "多次重试后注册率仍 < ${REG_THRESHOLD//0./}%，但继续训练 (可用 $NUM_IMAGES_REG 帧)"
+        warn "多次重试后注册率仍 < 50%，但继续训练 (可用 $NUM_IMAGES_REG 帧)"
     fi
 fi
 
@@ -500,49 +505,22 @@ else
     err "未找到 TSDF 输出网格"
 fi
 
-    log "  ◈ Manhattan 对齐 + Z-up..."
-# Manhattan rotation from COLMAP points + Y-up for Isaac Sim
+    log "  ◈ Manhattan 对齐 + 翻转检测 + Y-up..."
+# Manhattan rotation from COLMAP points, with flip detection, then Y-up for Isaac Sim
 if [ -f "$MESH_OUT" ] && [ -f "$SPARSE_DIR/0/points3D.bin" ]; then
     python -c "
-import struct, numpy as np, trimesh, json
-from sklearn.decomposition import PCA
+import sys; sys.path.insert(0, '$PROJECT_DIR/utils')
+from align_to_isaac import load_colmap_points, compute_manhattan_rotation, apply_rotation_to_mesh, save_rotation_json
 
-path = '$SPARSE_DIR/0/points3D.bin'
-pts = []
-with open(path, 'rb') as f:
-    n = struct.unpack('<Q', f.read(8))[0]
-    for _ in range(n):
-        data = f.read(43); x,y,z = struct.unpack_from('<ddd', data, 8)
-        pts.append([x,y,z])
-        track_len = struct.unpack('<Q', f.read(8))[0]; f.seek(track_len * 8, 1)
-pts = np.array(pts)
-
-# Manhattan: PCA on COLMAP points → Z-up then Y-up
-pca = PCA(n_components=3).fit(pts)
-comps = pca.components_.copy(); var = pca.explained_variance_.copy()
-order = np.argsort(var)
-z_axis = comps[order[0]]; z_axis /= np.linalg.norm(z_axis)
-x_axis = comps[order[2]]; x_axis /= np.linalg.norm(x_axis)
-if np.dot(z_axis, [0,0,1]) < 0: z_axis = -z_axis
-if np.dot(x_axis, [1,0,0]) < 0: x_axis = -x_axis
-y_axis = np.cross(z_axis, x_axis); y_axis /= np.linalg.norm(y_axis)
-R_zup = np.column_stack([x_axis, y_axis, z_axis]).T
-angle = np.degrees(np.arccos(np.clip(np.dot(z_axis, [0,0,1]), -1, 1)))
-print(f'Manhattan: Z-up angle={angle:.1f}deg')
-R = R_zup if angle > 2 else np.eye(3)
-
-# Y-up for Isaac Sim
-R_yup = np.array([[1,0,0],[0,0,-1],[0,1,0]])
-R = R_yup @ R
-
-# Apply to mesh
-mesh = trimesh.load('$MESH_OUT')
-mesh.vertices = (R @ mesh.vertices.T).T
-mesh.export('$MESH_OUT')
+pts = load_colmap_points('$SPARSE_DIR/0/points3D.bin')
+result = compute_manhattan_rotation(pts, do_flip_check=True)
+R = result['R']
+print(f'Manhattan: angle={result[\"angle_deg\"]:.1f}deg, flipped={result[\"flipped\"]}')
+if result['flipped']:
+    print(f'  Flip: top={result[\"flip_top_count\"]} > bot={result[\"flip_bot_count\"]}')
+apply_rotation_to_mesh('$MESH_OUT', R)
+save_rotation_json(R, '${TWODGS_OUT}/rotation.json')
 print(f'Mesh rotated to Isaac Sim Y-up')
-
-# Save rotation for ground collision
-json.dump({'R': R.tolist()}, open('${TWODGS_OUT}/rotation.json', 'w'))
 " 2>&1 && log "  ◈ Manhattan 对齐完成"
 fi
 
@@ -705,26 +683,9 @@ elif [ -f "$MESH_OUT" ]; then
 # PLY → USDA (Isaac Lab native format, with collision API)
     USDA_MESH="${MESH_OUT%.ply}.usda"
     python -c "
-from pxr import Usd, UsdGeom, UsdPhysics
-import trimesh, numpy as np
-
-m = trimesh.load('$MESH_OUT')
-
-stage = Usd.Stage.CreateNew('$USDA_MESH')
-UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-mesh = UsdGeom.Mesh.Define(stage, '/World/mesh')
-mesh.CreatePointsAttr().Set(m.vertices.astype(float).tolist())
-mesh.CreateFaceVertexCountsAttr().Set([3] * len(m.faces))
-mesh.CreateFaceVertexIndicesAttr().Set(m.faces.flatten().tolist())
-
-# Collision + rigid body API for Isaac Lab
-UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
-body = UsdPhysics.RigidBodyAPI.Apply(mesh.GetPrim())
-body.CreateKinematicEnabledAttr().Set(True)
-
-stage.GetRootLayer().Save()
-import os
-print(f'{os.path.getsize(\"$USDA_MESH\")/1024/1024:.0f} MB')
+import sys; sys.path.insert(0, '$PROJECT_DIR/utils')
+from align_to_isaac import export_mesh_usda
+export_mesh_usda('$MESH_OUT', '$USDA_MESH')
 " 2>&1 && log "USDA: $USDA_MESH"
 fi  # SKIP_USDZ
 

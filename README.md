@@ -122,8 +122,10 @@ colmap help 2>&1 | grep CUDA  # 应显示 "(Commit ... with CUDA)"
 simulation_reconstruct/
 ├── videos/                   # 输入视频（自动查找）
 ├── results/                  # 重建输出（自动生成）
-├── 3dgrut/                   # 3DGUT 源码
-├── 2dgs/                     # 2DGS 源码
+├── utils/                    # 共享工具模块
+│   └── align_to_isaac.py     #   PCA Manhattan 对齐 + USDA 导出
+├── 3dgrut/                   # 3DGUT 源码（需单独 clone）
+├── 2dgs/                     # 2DGS 源码（需单独 clone）
 ├── video_to_scene.sh         # 场景重建入口
 ├── video_to_mesh.sh          # 物体网格入口
 └── README.md
@@ -136,24 +138,26 @@ simulation_reconstruct/
 | 目标  | 场景级 3D Gaussian 重建   | 物体级 3D 网格重建               |
 | 方法  | 3DGUT (GS, SH=4)     | 2DGS (SH=4) + TSDF + 几何优化 |
 | 环境  | 保留完整场景               | DBSCAN 自动剔除 / 手动交互筛选      |
-| 对齐  | RANSAC 地板+天花板 → Z-up | RANSAC top-k 倾角最小 → Z-up  |
-| 地面  | 自动碰撞体                | 底面自动封闭                    |
-| 输出  | USDZ + 碰撞地面          | USDA + PLY (含碰撞 API)      |
+| 对齐  | PCA Manhattan → Z-up → flip → Y-up (共享 `utils/align_to_isaac.py`) |
+| 地面  | 自动碰撞体 + 组合场景          | 底面自动封闭 + 网格自带碰撞          |
+| 输出  | USDZ + 碰撞地面 + 组合 USDA  | USDA + PLY (含碰撞 API)      |
 | 体素  | —                    | 4mm TSDF                  |
 
 **环境**：`conda activate vid2sim`
 
 ## 共享流程
 
-两个脚本共用阶段 1-2，阶段 3-4 各自不同：
+两个脚本共用阶段 1-2，阶段 3-4 各自不同，对齐与导出共用 `utils/align_to_isaac.py`：
 
 ```
-FFmpeg (4K原图) → CLAHE增强 → COLMAP SfM → [3DGUT | 2DGS] → 清理 + 旋转 → USDZ
+FFmpeg (4K原图) → CLAHE增强 → COLMAP SfM → [3DGUT | 2DGS] → PCA对齐+Y-up → 导出
 ```
 
 - 视频放 `videos/` 目录，脚本自动查找
 - 输出在 `results/` 目录下
 - `-c` 跳过 FFmpeg，`-S` 跳过 COLMAP，`-T` 跳过训练
+- 对齐参数统一：`peak_threshold=0.0033`，`sequential_overlap=5`
+- `utils/align_to_isaac.py` 提供 PCA Manhattan 3 轴对齐（X=最长墙，Y=上，Z=另一水平）、flip 检测、USDA 导出等共享函数
 
 ## video_to_scene.sh — 场景重建
 
@@ -196,7 +200,7 @@ visual = UsdFileCfg(usd_path=".../scene_nurec.usdz")       # 视觉场景
 ground = UsdFileCfg(usd_path=".../ground_collision.usda")    # 地面碰撞
 ```
 
-视觉与地面在同一坐标系中，RANSAC 自动检测地板 + 天花板，统一旋转到 Z-up。
+对齐使用 PCA Manhattan 世界模型：最小方差轴 → 高度方向（Y-up），最大方差轴 → 最长墙面（X），中间方差轴 → 另一水平方向（Z），自动密度翻转检测确保场景不倒置。视觉模型与地面碰撞体在同一坐标系中。
 
 ## video_to_mesh.sh — 物体网格重建
 
@@ -244,7 +248,7 @@ object = UsdFileCfg(
 )
 ```
 
-RANSAC top-k 倾角最小平面自动对齐 Z 轴，几何优化平滑平面区、保留杆件细节、自动封闭底面。`-V` 可交互框选目标区域，终端摘要显示网格顶点/面数、密闭性、平坦/细节比例。
+对齐使用与场景管道相同的 PCA Manhattan + flip + Y-up（`utils/align_to_isaac.py`），确保 3 轴与 Isaac Sim 坐标系一致。几何优化平滑平面区、保留杆件细节、自动封闭底面。`-V` 可交互框选目标区域，终端摘要显示网格顶点/面数、密闭性、平坦/细节比例。
 
 # 
 
