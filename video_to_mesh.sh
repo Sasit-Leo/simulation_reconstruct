@@ -4,8 +4,8 @@
 set -euo pipefail
 
 VIDEO_PATH=""; OUTPUT_DIR=""; EXPERIMENT_NAME=""
-FPS=5; MAX_IMAGE_SIZE=1920; GPU_ID=0; TRAIN_ITERATIONS=60000; DOWNSAMPLE_FACTOR=2
-SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false; SKIP_USDZ=false; SKIP_CLAHE=true
+FPS=5; MAX_IMAGE_SIZE=2560; GPU_ID=0; TRAIN_ITERATIONS=60000; DOWNSAMPLE_FACTOR=2
+SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false; SKIP_USDZ=false; SKIP_ENHANCE=true
 VISUAL_FILTER=false  # -V: interactive point cloud crop before training
 CONDA_ENV="vid2sim"; PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"; TWODGS_DIR="$PROJECT_DIR/2dgs"
 CULL_FACTOR=1.5   # IQR multiplier for spatial culling (larger = looser)
@@ -26,7 +26,7 @@ while getopts "v:o:n:f:s:g:i:d:b:AcSThVu" opt; do
         s) MAX_IMAGE_SIZE="$OPTARG" ;; g) GPU_ID="$OPTARG" ;;
         i) TRAIN_ITERATIONS="$OPTARG" ;; d) DOWNSAMPLE_FACTOR="$OPTARG" ;;
         b) CULL_FACTOR="$OPTARG" ;;
-        c) SKIP_FFMPEG=true ;;  A) SKIP_CLAHE=false ;;  S) SKIP_COLMAP=true ;;  T) SKIP_TRAINING=true ;;  u) SKIP_USDZ=true ;;  V) VISUAL_FILTER=true ;;
+        c) SKIP_FFMPEG=true ;;  A) SKIP_ENHANCE=false ;;  S) SKIP_COLMAP=true ;;  T) SKIP_TRAINING=true ;;  u) SKIP_USDZ=true ;;  V) VISUAL_FILTER=true ;;
         h) usage ;;  *) usage ;;
     esac
 done
@@ -99,27 +99,26 @@ else
 fi
 log "图片: $FRAME_COUNT 帧"
 
-# CLAHE 对比度增强 — 金属/透明表面特征更明显
+# 边缘增强 (Laplacian 高通滤波) — 增强几何边缘，抑制镜面渐变
 if [ "$SKIP_FFMPEG" = false ] || [ "$FRAME_COUNT" -gt 0 ]; then
-    CLAHE_FLAG="${IMAGE_DIR}/.clahe_done"
-    if [ "$SKIP_CLAHE" = true ]; then
-        touch "$CLAHE_FLAG" 2>/dev/null || true
-        log "跳过 CLAHE"
-    elif [ ! -f "$CLAHE_FLAG" ]; then
-        log "CLAHE 增强..."
+    EDGE_FLAG="${IMAGE_DIR}/.edge_enhanced"
+    if [ "$SKIP_ENHANCE" = true ]; then
+        touch "$EDGE_FLAG" 2>/dev/null || true
+        log "跳过边缘增强"
+    elif [ ! -f "$EDGE_FLAG" ]; then
+        log "Laplacian 边缘增强 (抑制镜面渐变)..."
         python -c "
-import cv2
+import cv2, numpy as np
 from pathlib import Path
-clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
 for p in sorted(Path('$IMAGE_DIR').glob('*.jpg')):
     img = cv2.imread(str(p))
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    l = clahe.apply(l)
-    cv2.imwrite(str(p), cv2.cvtColor(cv2.merge([l,a,b]), cv2.COLOR_LAB2BGR),
-                [cv2.IMWRITE_JPEG_QUALITY, 95])
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float64)
+    lap = cv2.Laplacian(gray, cv2.CV_64F, ksize=3)
+    enhanced = np.clip(gray + 2.0 * lap, 0, 255).astype(np.uint8)
+    result = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+    cv2.imwrite(str(p), result, [cv2.IMWRITE_JPEG_QUALITY, 95])
 print(f'{sum(1 for _ in Path(\"$IMAGE_DIR\").glob(\"*.jpg\"))} images')
-" 2>&1 && touch "$CLAHE_FLAG" && log "CLAHE 完成"
+" 2>&1 && touch "$EDGE_FLAG" && log "边缘增强完成"
     fi
 fi
 
@@ -163,16 +162,16 @@ else
         --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" \
         --ImageReader.camera_model SIMPLE_RADIAL --ImageReader.single_camera 1 \
         --FeatureExtraction.use_gpu 1 --SiftExtraction.max_image_size "$MAX_IMAGE_SIZE" \
-        --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.0033 \
-        --SiftExtraction.edge_threshold 10 --SiftExtraction.num_octaves 5 --SiftExtraction.estimate_affine_shape 1 \
-        --SiftExtraction.domain_size_pooling 0 2>&1 | tail -2
+        --SiftExtraction.max_num_features 16384 --SiftExtraction.peak_threshold 0.008 \
+        --SiftExtraction.edge_threshold 15 --SiftExtraction.num_octaves 6 --SiftExtraction.estimate_affine_shape 1 \
+        --SiftExtraction.domain_size_pooling 1 2>&1 | tail -2
 
     [ ! -f "$DATABASE_PATH" ] && { err "特征提取失败"; exit 1; }
 
     colmap sequential_matcher \
         --database_path "$DATABASE_PATH" --FeatureMatching.use_gpu 1 --FeatureMatching.max_num_matches 65536 \
-        --SiftMatching.max_ratio 0.7 --SiftMatching.max_distance 0.5 --SiftMatching.cross_check 1 \
-        --SequentialMatching.overlap 5 2>&1 | tail -2
+        --SiftMatching.max_ratio 0.65 --SiftMatching.max_distance 0.45 --SiftMatching.cross_check 1 \
+        --SequentialMatching.overlap 10 2>&1 | tail -2
 
     mkdir -p "$SPARSE_DIR"
 
@@ -344,7 +343,7 @@ else
         --iterations "$TRAIN_ITERATIONS" \
         --resolution "$DOWNSAMPLE_FACTOR" \
         --sh_degree 4 \
-        --lambda_normal 0.05 \
+        --lambda_normal 0.1 \
         --lambda_dist 1.0 \
         --data_device cuda \
         --save_iterations $(seq -s ' ' 5000 5000 $TRAIN_ITERATIONS) \

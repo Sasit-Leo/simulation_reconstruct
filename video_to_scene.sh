@@ -10,15 +10,15 @@ VIDEO_PATH=""
 OUTPUT_DIR=""
 EXPERIMENT_NAME=""
 FPS=5
-MAX_IMAGE_SIZE=1920
+MAX_IMAGE_SIZE=2560
 GPU_ID=0
-TRAIN_ITERATIONS=60000
+TRAIN_ITERATIONS=80000
 DOWNSAMPLE_FACTOR=2
 SKIP_USDZ=false
 SKIP_FFMPEG=false
 SKIP_COLMAP=false
 SKIP_TRAINING=false
-SKIP_CLAHE=true
+SKIP_ENHANCE=true
 
 CONDA_ENV="vid2sim"
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"; THREEDGRUT_DIR="$PROJECT_DIR/3dgrut"
@@ -37,7 +37,7 @@ while getopts "v:o:n:f:s:g:i:d:uAcSTh" opt; do
         n) EXPERIMENT_NAME="$OPTARG" ;; f) FPS="$OPTARG" ;;
         s) MAX_IMAGE_SIZE="$OPTARG" ;; g) GPU_ID="$OPTARG" ;;
         i) TRAIN_ITERATIONS="$OPTARG" ;; d) DOWNSAMPLE_FACTOR="$OPTARG" ;;
-        u) SKIP_USDZ=true ;;  A) SKIP_CLAHE=false ;;  c) SKIP_FFMPEG=true ;;
+        u) SKIP_USDZ=true ;;  A) SKIP_ENHANCE=false ;;  c) SKIP_FFMPEG=true ;;
         S) SKIP_COLMAP=true ;; T) SKIP_TRAINING=true ;;  h) usage ;;  *) usage ;;
     esac
 done
@@ -115,27 +115,26 @@ else
 fi
 log "图片: $FRAME_COUNT 帧"
 
-# CLAHE 对比度增强 — 金属/透明表面特征更明显
+# 边缘增强 (Laplacian 高通滤波) — 增强几何边缘，抑制镜面渐变
 if [ "$SKIP_FFMPEG" = false ] || [ "$FRAME_COUNT" -gt 0 ]; then
-    CLAHE_FLAG="${IMAGE_DIR}/.clahe_done"
-    if [ "$SKIP_CLAHE" = true ]; then
-        touch "$CLAHE_FLAG" 2>/dev/null || true
-        log "跳过 CLAHE"
-    elif [ ! -f "$CLAHE_FLAG" ]; then
-        log "CLAHE 增强..."
+    EDGE_FLAG="${IMAGE_DIR}/.edge_enhanced"
+    if [ "$SKIP_ENHANCE" = true ]; then
+        touch "$EDGE_FLAG" 2>/dev/null || true
+        log "跳过边缘增强"
+    elif [ ! -f "$EDGE_FLAG" ]; then
+        log "Laplacian 边缘增强 (抑制镜面渐变)..."
         python -c "
-import cv2
+import cv2, numpy as np
 from pathlib import Path
-clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
 for p in sorted(Path('$IMAGE_DIR').glob('*.jpg')):
     img = cv2.imread(str(p))
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    l = clahe.apply(l)
-    cv2.imwrite(str(p), cv2.cvtColor(cv2.merge([l,a,b]), cv2.COLOR_LAB2BGR),
-                [cv2.IMWRITE_JPEG_QUALITY, 95])
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float64)
+    lap = cv2.Laplacian(gray, cv2.CV_64F, ksize=3)
+    enhanced = np.clip(gray + 2.0 * lap, 0, 255).astype(np.uint8)
+    result = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+    cv2.imwrite(str(p), result, [cv2.IMWRITE_JPEG_QUALITY, 95])
 print(f'{sum(1 for _ in Path(\"$IMAGE_DIR\").glob(\"*.jpg\"))} images')
-" 2>&1 && touch "$CLAHE_FLAG" && log "CLAHE 完成"
+" 2>&1 && touch "$EDGE_FLAG" && log "边缘增强完成"
     fi
 fi
 
@@ -179,16 +178,16 @@ else
         --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" \
         --ImageReader.camera_model SIMPLE_RADIAL --ImageReader.single_camera 1 \
         --FeatureExtraction.use_gpu 1 --SiftExtraction.max_image_size "$MAX_IMAGE_SIZE" \
-        --SiftExtraction.max_num_features 65536 --SiftExtraction.peak_threshold 0.0033 \
-        --SiftExtraction.edge_threshold 10 --SiftExtraction.num_octaves 5 --SiftExtraction.estimate_affine_shape 1 \
-        --SiftExtraction.domain_size_pooling 0 2>&1 | tail -2
+        --SiftExtraction.max_num_features 16384 --SiftExtraction.peak_threshold 0.008 \
+        --SiftExtraction.edge_threshold 15 --SiftExtraction.num_octaves 6 --SiftExtraction.estimate_affine_shape 1 \
+        --SiftExtraction.domain_size_pooling 1 2>&1 | tail -2
 
     [ ! -f "$DATABASE_PATH" ] && { err "特征提取失败"; exit 1; }
 
     colmap sequential_matcher \
         --database_path "$DATABASE_PATH" --FeatureMatching.use_gpu 1 --FeatureMatching.max_num_matches 65536 \
-        --SiftMatching.max_ratio 0.7 --SiftMatching.max_distance 0.5 --SiftMatching.cross_check 1 \
-        --SequentialMatching.overlap 5 2>&1 | tail -2
+        --SiftMatching.max_ratio 0.65 --SiftMatching.max_distance 0.45 --SiftMatching.cross_check 1 \
+        --SequentialMatching.overlap 10 2>&1 | tail -2
 
     mkdir -p "$SPARSE_DIR"
 
@@ -275,12 +274,19 @@ else
         "n_iterations=$TRAIN_ITERATIONS" "scheduler.positions.max_steps=$TRAIN_ITERATIONS"
         "render.particle_radiance_sph_degree=4" \
         "model.progressive_training.max_n_features=4" \
-        "model.progressive_training.increase_frequency=500" \
-        "optimizer.params.features_specular.lr=0.001" \
-        "loss.use_l2=true" "loss.lambda_l2=0.3" \
-        "strategy.density_decay.start_iteration=500" "strategy.density_decay.end_iteration=60000" \
-        "strategy.prune_scale.start_iteration=500" "strategy.prune_scale.end_iteration=30000" \
-        "strategy.prune_scale.frequency=500" "strategy.prune_scale.threshold=1.0" \
+        "model.progressive_training.increase_frequency=1000" \
+        "optimizer.params.features_specular.lr=0.0002" \
+        "loss.use_l2=true" "loss.lambda_l2=0.4" \
+        "strategy.density_decay.start_iteration=-1" "strategy.density_decay.end_iteration=-1" \
+        "strategy.prune_scale.start_iteration=-1" "strategy.prune_scale.end_iteration=-1" \
+        "strategy.densify.end_iteration=40000" \
+        "strategy.densify.clone_grad_threshold=0.0001" \
+        "strategy.densify.split_grad_threshold=0.0001" \
+        "strategy.reset_density.frequency=5000" \
+        "strategy.reset_density.new_max_density=0.02" \
+        "strategy.reset_density.end_iteration=$TRAIN_ITERATIONS" \
+        "strategy.prune.end_iteration=$TRAIN_ITERATIONS" \
+        "strategy.prune.density_threshold=0.003" \
         "post_processing.method=ppisp" "post_processing.n_distillation_steps=5000" \
         "num_workers=4" \
         "export_usd.enabled=true" "export_usd.format=nurec" "export_usd.apply_normalizing_transform=false")
@@ -337,18 +343,37 @@ keep = opacity >= 0.008
 scale_norm = np.linalg.norm(scales, axis=1)
 keep &= scale_norm < np.nanmedian(scale_norm) * 3
 
-# 3. DBSCAN: keep largest cluster
+# 3. Multi-scale DBSCAN: preserve all significant spatial clusters
 n_sample = min(N//10, 100000)
 rng = np.random.RandomState(42)
 idx = rng.choice(N, n_sample, replace=False)
 sample = pos[idx]
-cl = DBSCAN(eps=5.0, min_samples=30).fit(sample)
-ls = cl.labels_; cnt = Counter(ls[ls>=0])
-if cnt:
-    largest = cnt.most_common(1)[0][0]
+
+# Multi-scale clustering: fine → medium → coarse
+keep_cluster = np.zeros(N, dtype=bool)
+for eps in [0.3, 0.8, 2.0]:
+    cl = DBSCAN(eps=eps, min_samples=20).fit(sample)
+    ls = cl.labels_
+    cnt = Counter(ls[ls >= 0])
+    if not cnt: continue
     tree = cKDTree(sample); _, nn = tree.query(pos, k=3)
     fl = np.array([ls[nn[i][ls[nn[i]]>=0][0]] if np.any(ls[nn[i]]>=0) else -1 for i in range(N)])
-    keep &= fl == largest
+    for label_id, count in cnt.items():
+        if count > N * 0.02:
+            keep_cluster |= (fl == label_id)
+    print(f'  eps={eps}: {len(cnt)} clusters, kept {keep_cluster.sum():,} pts so far')
+
+if keep_cluster.any():
+    keep &= keep_cluster
+else:
+    # Fallback: keep largest cluster (conservative)
+    cl = DBSCAN(eps=5.0, min_samples=30).fit(sample)
+    ls = cl.labels_; cnt = Counter(ls[ls>=0])
+    if cnt:
+        largest = cnt.most_common(1)[0][0]
+        tree = cKDTree(sample); _, nn = tree.query(pos, k=3)
+        fl = np.array([ls[nn[i][ls[nn[i]]>=0][0]] if np.any(ls[nn[i]]>=0) else -1 for i in range(N)])
+        keep &= fl == largest
 for k in ['positions','rotation','scale','density','features_albedo','features_specular']:
     if k in ckpt: ckpt[k] = ckpt[k][keep]
 print(f'{keep.sum():,} / {N:,} ({keep.mean()*100:.0f}%)')
