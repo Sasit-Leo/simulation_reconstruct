@@ -278,15 +278,16 @@ else
         "optimizer.params.features_specular.lr=0.0002" \
         "loss.use_l2=true" "loss.lambda_l2=0.4" \
         "strategy.density_decay.start_iteration=-1" "strategy.density_decay.end_iteration=-1" \
-        "strategy.prune_scale.start_iteration=-1" "strategy.prune_scale.end_iteration=-1" \
-        "strategy.densify.end_iteration=40000" \
-        "strategy.densify.clone_grad_threshold=0.0001" \
-        "strategy.densify.split_grad_threshold=0.0001" \
+        "strategy.prune_scale.start_iteration=500" "strategy.prune_scale.end_iteration=$TRAIN_ITERATIONS" \
+        "strategy.prune_scale.frequency=500" "strategy.prune_scale.threshold=5.0" \
+        "strategy.densify.end_iteration=20000" \
+        "strategy.densify.clone_grad_threshold=0.0002" \
+        "strategy.densify.split_grad_threshold=0.0002" \
         "strategy.reset_density.frequency=5000" \
         "strategy.reset_density.new_max_density=0.02" \
         "strategy.reset_density.end_iteration=$TRAIN_ITERATIONS" \
         "strategy.prune.end_iteration=$TRAIN_ITERATIONS" \
-        "strategy.prune.density_threshold=0.003" \
+        "strategy.prune.density_threshold=0.005" \
         "post_processing.method=ppisp" "post_processing.n_distillation_steps=5000" \
         "num_workers=4" \
         "export_usd.enabled=true" "export_usd.format=nurec" "export_usd.apply_normalizing_transform=false")
