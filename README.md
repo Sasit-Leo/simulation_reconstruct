@@ -123,7 +123,7 @@ simulation_reconstruct/
 ├── videos/                   # 输入视频（自动查找）
 ├── results/                  # 重建输出（自动生成）
 ├── utils/                    # 共享工具模块
-│   └── align_to_isaac.py     #   PCA Manhattan 对齐 + USDA 导出
+│   └── align_to_isaac.py     #   对齐 + USDA 导出
 ├── 3dgrut/                   # 3DGUT 源码（需单独 clone）
 ├── 2dgs/                     # 2DGS 源码（需单独 clone）
 ├── video_to_scene.sh         # 场景重建入口
@@ -133,31 +133,31 @@ simulation_reconstruct/
 
 ## 两个 Pipeline
 
-|     | `video_to_scene.sh`                                               | `video_to_mesh.sh`        |
-| --- | ----------------------------------------------------------------- | ------------------------- |
-| 目标  | 场景级 3D Gaussian 重建                                                | 物体级 3D 网格重建               |
-| 方法  | 3DGUT (GS, SH=4)                                                  | 2DGS (SH=4) + TSDF + 几何优化 |
-| 环境  | 保留完整场景                                                            | DBSCAN 自动剔除 / 手动交互筛选      |
-| 对齐  | PCA Manhattan → Z-up → flip → Y-up (共享 `utils/align_to_isaac.py`) |                           |
-| 地面  | 自动碰撞体 + 组合场景                                                      | 底面自动封闭 + 网格自带碰撞           |
-| 输出  | USDZ + 碰撞地面 + 组合 USDA                                             | USDA + PLY (含碰撞 API)      |
-| 体素  | —                                                                 | 4mm TSDF                  |
+|     | `video_to_scene.sh`                                                     | `video_to_mesh.sh`        |
+| --- | ----------------------------------------------------------------------- | ------------------------- |
+| 目标  | 场景级 3D Gaussian 重建                                                      | 物体级 3D 网格重建               |
+| 方法  | 3DGUT (GS, SH=4)                                                        | 2DGS (SH=4) + TSDF + 几何优化 |
+| 环境  | 保留完整场景                                                                  | DBSCAN 自动剔除 / 手动交互筛选      |
+| 对齐  | PCA Manhattan → Z-up → flip → Y-up       (共享 `utils/align_to_isaac.py`) |                           |
+| 地面  | 自动碰撞体 + 组合场景                                                            | 底面自动封闭 + 网格自带碰撞           |
+| 输出  | USDZ + 碰撞地面 + 组合 USDA                                                   | USDA                      |
+| 体素  | —                                                                       | 4mm TSDF                  |
 
 **环境**：`conda activate vid2sim`
 
 ## 共享流程
 
-两个脚本共用阶段 1-2，阶段 3-4 各自不同，对齐与导出共用 `utils/align_to_isaac.py`：
+两个脚本共用阶段 1-2，阶段 3-4 不同，对齐与导出共用 `utils/align_to_isaac.py`：
 
 ```
-FFmpeg → Laplacian边缘增强 → COLMAP SfM → [3DGUT | 2DGS] → PCA对齐 → 导出
+FFmpeg → 边缘增强 → COLMAP SfM → [3DGUT | 2DGS] → 对齐 → 导出
 ```
 
 - 视频放 `videos/` 目录，脚本自动查找
 - 输出在 `results/` 目录下
 - `-c` 跳过 FFmpeg，`-S` 跳过 COLMAP，`-T` 跳过训练
 - 图像增强：Laplacian 高通滤波 — 增强几何边缘（默认启用，`-A` 禁用）
-- 高反射环境优化：严格 SIFT 筛选 + 禁用密度衰减/尺度剪枝 + 降低 specular LR + 多尺度 DBSCAN
+- 高反射优化：严格 SIFT 筛选 + 禁用密度衰减/尺度剪枝 + 降低 specular LR + 多尺度 DBSCAN
 - `utils/align_to_isaac.py` 提供 PCA Manhattan 3 轴对齐、flip 检测、USDA 导出等共享函数
 
 ## video_to_scene.sh — 场景重建
@@ -175,8 +175,8 @@ FFmpeg → Laplacian边缘增强 → COLMAP SfM → [3DGUT | 2DGS] → PCA对齐
 | `-i` | 训练迭代数                  | `80000`               |
 | `-d` | 训练下采样 (`1`=4K, `2`=2K) | `2` (24GB 推荐)         |
 | `-g` | GPU ID                 | `0`                   |
+| `-A` | 禁用边缘增强                 | 否                     |
 | `-u` | 跳过 USDZ 导出             | 否                     |
-| `-A` | 禁用边缘增强               | 否                     |
 | `-c` | 跳过 FFmpeg              | 否                     |
 | `-S` | 跳过 COLMAP              | 否                     |
 | `-T` | 跳过训练                   | 否                     |
@@ -187,7 +187,7 @@ FFmpeg → Laplacian边缘增强 → COLMAP SfM → [3DGUT | 2DGS] → PCA对齐
 results/<video>_scene/runs/<experiment>/<experiment>-MMDD_HHMMSS/
 ├── scene_nurec.usdz            # ★ 视觉场景
 ├── ground_collision.usda       # ★ 地面碰撞体
-├── reconstruction.json         # 变换信息+质量指标+元信息
+├── reconstruction.json         # 运行记录信息
 ├── ckpt_last.pt                # 模型 checkpoint (续训用)
 └── ours_*/                     # 各阶段 checkpoint 
 ```
@@ -201,7 +201,7 @@ visual = UsdFileCfg(usd_path=".../scene_nurec.usdz")       # 视觉场景
 ground = UsdFileCfg(usd_path=".../ground_collision.usda")    # 地面碰撞
 ```
 
-对齐使用 PCA Manhattan 世界模型：最小方差轴 → 高度方向（Y），最大方差轴 → 最长墙面（X），中间方差轴 → 另一水平方向（Z），自动密度翻转检测确保场景不倒置。地面碰撞体沿 X×Z 平面展开，Y 位置在地板高度。视觉模型与地面碰撞体在同一坐标系中。COLMAP Mapper 单次运行，无需重试。
+对齐使用 PCA Manhattan 世界模型：最小方差轴 → 高度方向（Y），最大方差轴 → 最长墙面（X），中间方差轴 → 另一水平方向（Z），自动密度翻转检测确保场景不倒置。地面碰撞体沿 X×Z 平面展开，Y 位置在地板高度。视觉模型与地面碰撞体在同一坐标系中。
 
 ## video_to_mesh.sh — 物体网格重建
 
@@ -218,9 +218,9 @@ ground = UsdFileCfg(usd_path=".../ground_collision.usda")    # 地面碰撞
 | `-i` | 训练迭代数                  | `60000`              |
 | `-d` | 训练下采样 (`1`=4K, `2`=2K) | `2` (24GB 推荐)        |
 | `-g` | GPU ID                 | `0`                  |
-| `-V` | 禁用交互筛选               | 否                    |
+| `-V` | 禁用交互筛选                 | 否                    |
 | `-b` | 背景剔除系数                 | `1.5`                |
-| `-A` | 禁用边缘增强               | 否                    |
+| `-A` | 禁用边缘增强                 | 否                    |
 | `-u` | 跳过 USDA 导出             | 否                    |
 | `-c` | 跳过 FFmpeg              | 否                    |
 | `-S` | 跳过 COLMAP              | 否                    |
@@ -232,7 +232,7 @@ ground = UsdFileCfg(usd_path=".../ground_collision.usda")    # 地面碰撞
 results/<video>_mesh/runs/<experiment>/<experiment>-MMDD_HHMMSS/
 ├── mesh_<video>.usda            # ★ 网格模型
 ├── mesh_<video>.ply             # PLY 网格
-├── reconstruction.json          # 网格指标+COLMAP信息+耗时信息
+├── reconstruction.json          # 运行记录信息
 ├── ckpt_*.pt                    # 模型 checkpoint
 └── point_cloud/                 # 2DGS 模型
 ```
@@ -249,7 +249,7 @@ object = UsdFileCfg(
 )
 ```
 
-对齐使用与场景管道相同，确保 3 轴与 Isaac Sim 坐标系一致。几何优化平滑平面区、保留杆件细节、自动封闭底面。默认交互框选目标区域（`-V` 禁用），终端摘要显示网格顶点/面数、密闭性、平坦/细节比例。
+对齐使用与场景管道相同，确保 3 轴与 Isaac Sim 坐标系一致。几何优化平滑平面区、保留杆件细节、自动封闭底面。终端摘要显示网格顶点/面数、密闭性、平坦/细节比例。
 
 # 
 
