@@ -77,31 +77,36 @@ cmake --build build -j$(nproc) && cmake --install build
 
 ### 3DGUT 内核补丁
 
-3DGUT 有两个边界条件 bug 需要手动修复：
+3DGUT 有三个边界条件 bug 需要手动修复（已在本仓库中应用）。
 
-**`threedgut_tracer/src/gutRenderer.cu`**（`numParticles=0` 时非法内存访问）：
+**1. `threedgut_tracer/src/gutRenderer.cu` — forward render: `numParticles=0` 时非法 kernel launch**
+
+在 `renderForward` 函数中，原来的 `numParticles == 0` 检查在 `projectOnTiles` kernel 之后，导致对 0 粒子发起 CUDA kernel 报 `cudaErrorInvalidConfiguration`。修复：将检查移到函数开头（kernel launch 之前）：
 
 ```cpp
-// 在 "fetch total number of particle/tile intersections" 之前添加：
+const uint32_t numParticles = parameters.values.numParticles;
+// 在 kernel launch 之前提前返回
 if (numParticles == 0) {
     return Status();
 }
 ```
 
-**`threedgrut/strategy/gs.py`**（空梯度 / 字典访问错误）：
+**2. `threedgut_tracer/src/gutRenderer.cu` — backward render: `numParticles=0` 时仅打日志不返回**
 
-```python
-# update_gradient_buffer 方法中：
-params_grad = self.model.positions.grad
-assert params_grad is not None  # 移到 mask 之前
-if params_grad.numel() == 0: return
-mask = (params_grad != 0).max(dim=1)[0]
-if not mask.any(): return
+`renderBackward` 中原来只 `LOG_ERROR` 后继续执行，改为 `RETURN_ERROR` 真正退出：
 
-# prune_gaussians_scale 方法中：
-intr = list(dataset.intrinsics.values())[0]  # 曾是 dataset.intrinsic[0]
-max_focal = torch.as_tensor(intr[0]['focal_length']).float().max()
+```cpp
+if (numParticles == 0) {
+    RETURN_ERROR(m_logger, ErrorCode::Runtime,
+        "[GUTRenderer] number of particles is 0, cannot render backward.");
+}
 ```
+
+**3. `threedgrut/strategy/gs.py` — 防止剪枝至 0 粒子的安全兜底**
+
+`prune_gaussians_scale` 和 `prune_gaussians_opacity` 中新增最小粒子数保护：当 mask 会剔除所有粒子时，强制保留 ratio 最小 / density 最高的 `MIN_PARTICLES=16` 个粒子，避免 CUDA 端崩溃。
+
+> **注意**：`prune_scale` 默认是**禁用**的（`start_iteration: -1`）。若启用，阈值 `threshold` 含义是「投影像素尺寸 ≥ 阈值则剔除」。默认值 1.0 极激进，建议 ≥ 10.0 且 `start_iteration ≥ 3000`，否则早期高斯会被全量剔除（100% → 0 particle → CUDA crash）。
 
 ### 配置验证
 
