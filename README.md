@@ -124,13 +124,12 @@ simulation_reconstruct/
 两个脚本共用阶段 1-2，阶段 3-4 不同，对齐与导出共用 `utils/align_to_isaac.py`：
 
 ```
-FFmpeg → 边缘增强 → COLMAP SfM → [3DGUT | 2DGS] → 对齐 → 导出
+FFmpeg → COLMAP SfM → [3DGUT | 2DGS] → 对齐 → 导出
 ```
 
 - 视频放 `videos/` 目录，脚本自动查找
 - 输出在 `results/` 目录下
 - `-c` 跳过 FFmpeg，`-S` 跳过 COLMAP，`-T` 跳过训练
-- 图像增强：Laplacian 高通滤波 — 增强几何边缘（默认启用，`-A` 禁用）
 - 高反射优化：严格 SIFT 筛选 + 禁用密度衰减/尺度剪枝 + 降低 specular LR + 多尺度 DBSCAN
 - `utils/align_to_isaac.py` 提供 PCA Manhattan 3 轴对齐、flip 检测、USDA 导出等共享函数
 
@@ -149,7 +148,6 @@ FFmpeg → 边缘增强 → COLMAP SfM → [3DGUT | 2DGS] → 对齐 → 导出
 | `-i` | 训练迭代数                  | `80000`               |
 | `-d` | 训练下采样 (`1`=4K, `2`=2K) | `2` (24GB 推荐)         |
 | `-g` | GPU ID                 | `0`                   |
-| `-A` | 禁用边缘增强                 | 否                     |
 | `-u` | 跳过 USDZ 导出             | 否                     |
 | `-c` | 跳过 FFmpeg              | 否                     |
 | `-S` | 跳过 COLMAP              | 否                     |
@@ -194,7 +192,6 @@ ground = UsdFileCfg(usd_path=".../ground_collision.usda")    # 地面碰撞
 | `-g` | GPU ID                 | `0`                  |
 | `-V` | 禁用交互筛选                 | 否                    |
 | `-b` | 背景剔除系数                 | `1.5`                |
-| `-A` | 禁用边缘增强                 | 否                    |
 | `-u` | 跳过 USDA 导出             | 否                    |
 | `-c` | 跳过 FFmpeg              | 否                    |
 | `-S` | 跳过 COLMAP              | 否                    |

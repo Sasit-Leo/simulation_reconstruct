@@ -5,7 +5,7 @@ set -euo pipefail
 
 VIDEO_PATH=""; OUTPUT_DIR=""; EXPERIMENT_NAME=""
 FPS=5; MAX_IMAGE_SIZE=2560; GPU_ID=0; TRAIN_ITERATIONS=60000; DOWNSAMPLE_FACTOR=2
-SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false; SKIP_USDZ=false; SKIP_ENHANCE=false
+SKIP_FFMPEG=false; SKIP_COLMAP=false; SKIP_TRAINING=false; SKIP_USDZ=false
 VISUAL_FILTER=true   # -V: disable interactive point cloud crop
 CONDA_ENV="vid2sim"; PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"; TWODGS_DIR="$PROJECT_DIR/2dgs"
 CULL_FACTOR=1.5   # IQR multiplier for spatial culling (larger = looser)
@@ -19,14 +19,14 @@ step() { echo -e "\n${BLUE}▶${NC} $(date '+%H:%M:%S') $*"; }
 
 usage() { head -32 "$0" | tail -16; exit 0; }
 
-while getopts "v:o:n:f:s:g:i:d:b:AcSThVu" opt; do
+while getopts "v:o:n:f:s:g:i:d:b:cSThVu" opt; do
     case $opt in
         v) VIDEO_PATH="$OPTARG" ;;  o) OUTPUT_DIR="$OPTARG" ;;
         n) EXPERIMENT_NAME="$OPTARG" ;; f) FPS="$OPTARG" ;;
         s) MAX_IMAGE_SIZE="$OPTARG" ;; g) GPU_ID="$OPTARG" ;;
         i) TRAIN_ITERATIONS="$OPTARG" ;; d) DOWNSAMPLE_FACTOR="$OPTARG" ;;
         b) CULL_FACTOR="$OPTARG" ;;
-        c) SKIP_FFMPEG=true ;;  A) SKIP_ENHANCE=true ;;  S) SKIP_COLMAP=true ;;  T) SKIP_TRAINING=true ;;  u) SKIP_USDZ=true ;;  V) VISUAL_FILTER=false ;;
+        c) SKIP_FFMPEG=true ;;  S) SKIP_COLMAP=true ;;  T) SKIP_TRAINING=true ;;  u) SKIP_USDZ=true ;;  V) VISUAL_FILTER=false ;;
         h) usage ;;  *) usage ;;
     esac
 done
@@ -98,30 +98,6 @@ else
     [ "$FRAME_COUNT" -eq 0 ] && { err "抽帧失败"; exit 1; }
 fi
 log "图片: $FRAME_COUNT 帧"
-
-# 边缘增强 (Laplacian 高通滤波) — 增强几何边缘，抑制镜面渐变
-if [ "$SKIP_FFMPEG" = false ] || [ "$FRAME_COUNT" -gt 0 ]; then
-    EDGE_FLAG="${IMAGE_DIR}/.edge_enhanced"
-    if [ "$SKIP_ENHANCE" = true ]; then
-        touch "$EDGE_FLAG" 2>/dev/null || true
-        log "跳过边缘增强"
-    elif [ ! -f "$EDGE_FLAG" ]; then
-        log "Laplacian 边缘增强 (抑制镜面渐变)..."
-        python -c "
-import cv2, numpy as np
-from pathlib import Path
-for p in sorted(Path('$IMAGE_DIR').glob('*.jpg')):
-    img = cv2.imread(str(p))
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float64)
-    lap = cv2.Laplacian(gray, cv2.CV_64F, ksize=3)
-    enhanced = np.clip(gray + 2.0 * lap, 0, 255).astype(np.uint8)
-    result = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
-    cv2.imwrite(str(p), result, [cv2.IMWRITE_JPEG_QUALITY, 95])
-print(f'{sum(1 for _ in Path(\"$IMAGE_DIR\").glob(\"*.jpg\"))} images')
-" 2>&1 && touch "$EDGE_FLAG" && log "边缘增强完成"
-    fi
-fi
-
 # auto downsampled images for 2DGS
 if [ "$DOWNSAMPLE_FACTOR" -gt 1 ]; then
     DOWNSAMPLED_DIR="${IMAGE_DIR}_${DOWNSAMPLE_FACTOR}"
