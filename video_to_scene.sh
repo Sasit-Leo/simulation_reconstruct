@@ -191,61 +191,21 @@ else
 
     mkdir -p "$SPARSE_DIR"
 
-    # Mapper + 自动重试: 对困难场景，COLMAP 初始像对选取有随机性
-    MAX_MAPPER_RETRIES=3
-    MAPPER_TRY=0
-    REG_THRESHOLD=0.50
-    while [ "$MAPPER_TRY" -lt "$MAX_MAPPER_RETRIES" ]; do
-        MAPPER_TRY=$((MAPPER_TRY + 1))
-        log "Mapper 尝试 $MAPPER_TRY/$MAX_MAPPER_RETRIES ..."
+    colmap mapper \
+        --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" --output_path "$SPARSE_DIR" \
+        --Mapper.ba_global_function_tolerance 1e-6 --Mapper.ba_use_gpu 1 --Mapper.ba_refine_principal_point 1 2>&1 | \
+        awk -v total="$FRAME_COUNT" '/Registering image/ {
+            count++; pct=int(count/total*100);
+            printf "\r  [Mapper] %d/%d frames (%d%%)", count, total, pct
+        } /ERROR|WARN|Elapsed|Discard|Keeping|No good/ { print "\n" $0 }
+        END { if(count>0) printf "\n" }'
 
-        rm -rf "$SPARSE_DIR"/*/
-        colmap mapper \
-            --database_path "$DATABASE_PATH" --image_path "$IMAGE_DIR" --output_path "$SPARSE_DIR" \
-            --Mapper.ba_global_function_tolerance 1e-6 --Mapper.ba_use_gpu 1 --Mapper.ba_refine_principal_point 1 2>&1 | \
-            awk -v total="$FRAME_COUNT" '/Registering image/ {
-                count++; pct=int(count/total*100);
-                printf "\r  [Mapper] %d/%d frames (%d%%)", count, total, pct
-            } /ERROR|WARN|Elapsed|Discard|Keeping|No good/ { print "\n" $0 }
-            END { if(count>0) printf "\n" }'
-
-        # 选注册图像最多的 sparse/N/
-        BEST_SPARSE=$(python -c "
-import struct, os, glob
-best_n, best_dir = 0, ''
-for d in sorted(glob.glob('$SPARSE_DIR/*/')):
-    im = os.path.join(d, 'images.bin')
-    if os.path.exists(im):
-        with open(im, 'rb') as f:
-            n = struct.unpack('<Q', f.read(8))[0]
-        if n > best_n: best_n, best_dir = n, d
-print(best_dir.rstrip('/') if best_n > 0 else '')
-")
-        [ -z "$BEST_SPARSE" ] && continue
-
-        BEST_IDX=$(basename "$BEST_SPARSE")
-        if [ "$BEST_IDX" != "0" ]; then
-            rm -rf "$SPARSE_DIR/0"
-            mv "$BEST_SPARSE" "$SPARSE_DIR/0"
-        fi
-
-        NUM_IMAGES_REG=$(python -c "import struct;f=open('$SPARSE_DIR/0/images.bin','rb');print(struct.unpack('<Q',f.read(8))[0])")
-        REG_RATIO=$(python -c "print($NUM_IMAGES_REG/$FRAME_COUNT)")
-        log "注册 $NUM_IMAGES_REG/$FRAME_COUNT 帧 ($(python -c "print(f'{$REG_RATIO*100:.0f}')")%)"
-
-        if python -c "exit(0 if $REG_RATIO >= $REG_THRESHOLD else 1)"; then
-            log "注册率达标 (≥50%)，继续训练"
-            break
-        fi
-        warn "注册率 < 50%，重试..."
-    done
+    NUM_IMAGES_REG=$(python -c "import struct;f=open('$SPARSE_DIR/0/images.bin','rb');print(struct.unpack('<Q',f.read(8))[0])")
+    log "注册 $NUM_IMAGES_REG/$FRAME_COUNT 帧"
 
     if [ ! -f "$SPARSE_DIR/0/cameras.bin" ] || [ ! -f "$SPARSE_DIR/0/images.bin" ]; then
-        err "COLMAP 失败: 多次重试后仍无有效重建"
+        err "COLMAP 失败: 无有效重建"
         exit 1
-    fi
-    if python -c "exit(0 if $REG_RATIO < $REG_THRESHOLD else 1)"; then
-        warn "多次重试后注册率仍 < 50%，但继续训练 (可用 $NUM_IMAGES_REG 帧)"
     fi
 fi
 
