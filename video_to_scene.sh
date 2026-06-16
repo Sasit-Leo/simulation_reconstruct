@@ -240,8 +240,7 @@ else
         "loss.use_l2=true" "loss.lambda_l2=0.2" \
         "loss.use_scale=true" "loss.lambda_scale=0.1" \
         "strategy.density_decay.start_iteration=-1" "strategy.density_decay.end_iteration=-1" \
-        "strategy.prune_scale.start_iteration=500" "strategy.prune_scale.end_iteration=$TRAIN_ITERATIONS" \
-        "strategy.prune_scale.frequency=500" "strategy.prune_scale.threshold=2.0" \
+        "strategy.prune_scale.start_iteration=-1" "strategy.prune_scale.end_iteration=-1" \
         "strategy.densify.end_iteration=40000" \
         "strategy.densify.clone_grad_threshold=0.0002" \
         "strategy.densify.split_grad_threshold=0.0002" \
