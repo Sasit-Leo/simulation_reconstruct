@@ -91,7 +91,7 @@ def compute_manhattan_rotation(
       6. If angle < threshold: R_zup = I (skip near-identity)
       7. Flip detection: count points in bottom vs top 20% Z-band
          If top denser than bottom → flip Y and Z (diag(1,-1,-1))
-      8. Y-up: R_yup = [[1,0,0],[0,0,-1],[0,1,0]], R_final = R_yup @ (flip @ R_zup)
+      8. Y-up: R_yup = [[1,0,0],[0,0,1],[0,-1,0]], R_final = R_yup @ (flip @ R_zup)
 
     Returns dict with keys:
       R             — (3,3) final rotation matrix
@@ -166,9 +166,10 @@ def compute_manhattan_rotation(
             flipped = True
 
     # ── Y-up conversion (Isaac Sim) ──
+    # Rotate +90° around X: old +Z → new +Y, old +Y → new -Z (right-handed)
     R_yup = np.array([[1, 0, 0],
-                      [0, 0, -1],
-                      [0, 1, 0]], dtype=np.float64)
+                      [0, 0, 1],
+                      [0, -1, 0]], dtype=np.float64)
     R_final = R_yup @ R_zup
 
     points_rotated = (R_final @ points.T).T
@@ -248,7 +249,7 @@ def load_rotation_json(path: str) -> np.ndarray:
 # ──────────────────────────────────────────────
 # 6. USDA mesh export (PLY → USDA + collision)
 # ──────────────────────────────────────────────
-def export_mesh_usda(mesh_path: str, usda_path: str, up_axis: str = "Z"):
+def export_mesh_usda(mesh_path: str, usda_path: str, up_axis: str = "Y"):
     """
     Export PLY mesh to USDA with collision API.
 
@@ -286,46 +287,53 @@ def export_ground_collision_usda(
     usda_path: str,
     margin: float = 2.0,
     ground_half_height: float = 0.02,
-    up_axis: str = "Z",
+    up_axis: str = "Y",
 ):
     """
     Generate a thin ground collision plane from rotated points.
 
+    Assumes points are in Isaac Sim Y-up frame:
+      X = longest wall, Y = up, Z = other horizontal
+
     Args:
-        points_rotated: (N,3) points in the same frame as visual model
+        points_rotated: (N,3) points in the same Y-up frame as visual model
         usda_path:       output .usda path
         margin:          extra margin in meters on each side
-        ground_half_height: half-thickness of ground slab
-        up_axis:         USD stage upAxis ("Z" for backward compat)
+        ground_half_height: half-thickness of ground slab (Y direction)
+        up_axis:         USD stage upAxis ("Y" for Isaac Sim)
     """
     from pxr import Usd, UsdGeom, UsdPhysics, Gf
 
     pts = points_rotated
 
+    # Horizontal extent: X (longest wall) and Z (other horizontal)
     xmin = np.percentile(pts[:, 0], 5)
     xmax = np.percentile(pts[:, 0], 95)
-    ymin = np.percentile(pts[:, 1], 5)
-    ymax = np.percentile(pts[:, 1], 95)
     zmin = np.percentile(pts[:, 2], 5)
+    zmax = np.percentile(pts[:, 2], 95)
+    # Floor height: minimum Y (up direction)
+    floor_y = np.percentile(pts[:, 1], 5)
 
     cx = (xmin + xmax) / 2.0
-    cy = (ymin + ymax) / 2.0
-    w = (xmax - xmin) + margin * 2
-    d = (ymax - ymin) + margin * 2
+    cz = (zmin + zmax) / 2.0
+    w = (xmax - xmin) + margin * 2   # X extent (long side)
+    d = (zmax - zmin) + margin * 2   # Z extent (short side)
 
     stage = Usd.Stage.CreateNew(usda_path)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z if up_axis == "Z" else UsdGeom.Tokens.y)
 
     ground = UsdGeom.Cube.Define(stage, '/World/ground')
-    ground.AddScaleOp().Set(Gf.Vec3f(float(w / 2), float(d / 2), float(ground_half_height)))
-    ground.AddTranslateOp().Set(Gf.Vec3f(float(cx), float(cy), float(zmin)))
+    # Cube scale: (X-half, Y-half, Z-half) → thin in Y, wide in X, deep in Z
+    ground.AddScaleOp().Set(Gf.Vec3f(float(w / 2), float(ground_half_height), float(d / 2)))
+    # Position at floor level: center at floor_y (bottom at floor_y - h, top at floor_y + h)
+    ground.AddTranslateOp().Set(Gf.Vec3f(float(cx), float(floor_y), float(cz)))
 
     UsdPhysics.CollisionAPI.Apply(ground.GetPrim())
     body = UsdPhysics.RigidBodyAPI.Apply(ground.GetPrim())
     body.CreateKinematicEnabledAttr().Set(True)
 
     stage.GetRootLayer().Save()
-    print(f'Ground: {w:.1f}x{d:.1f}m at Z={zmin:.2f}')
+    print(f'Ground: {w:.1f}x{d:.1f}m (X×Z) at Y={floor_y:.2f}')
 
 
 # ──────────────────────────────────────────────
@@ -344,9 +352,10 @@ def export_combined_scene_usda(
         gaussian_subpath:  relative path to the nurec USDZ
         ground_subpath:    relative path to the ground collision USDA
     """
-    from pxr import Usd
+    from pxr import Usd, UsdGeom
 
     stage = Usd.Stage.CreateNew(usda_path)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
     stage.GetRootLayer().subLayerPaths = [gaussian_subpath, ground_subpath]
     stage.SetDefaultPrim(stage.DefinePrim('/World', 'Xform'))
     stage.GetRootLayer().Save()

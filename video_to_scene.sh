@@ -276,11 +276,13 @@ else
         "model.progressive_training.max_n_features=4" \
         "model.progressive_training.increase_frequency=1000" \
         "optimizer.params.features_specular.lr=0.0002" \
-        "loss.use_l2=true" "loss.lambda_l2=0.4" \
+        "loss.use_l1=true" "loss.lambda_l1=0.8" \
+        "loss.use_l2=true" "loss.lambda_l2=0.2" \
+        "loss.use_scale=true" "loss.lambda_scale=0.1" \
         "strategy.density_decay.start_iteration=-1" "strategy.density_decay.end_iteration=-1" \
         "strategy.prune_scale.start_iteration=500" "strategy.prune_scale.end_iteration=$TRAIN_ITERATIONS" \
-        "strategy.prune_scale.frequency=500" "strategy.prune_scale.threshold=5.0" \
-        "strategy.densify.end_iteration=20000" \
+        "strategy.prune_scale.frequency=500" "strategy.prune_scale.threshold=2.0" \
+        "strategy.densify.end_iteration=40000" \
         "strategy.densify.clone_grad_threshold=0.0002" \
         "strategy.densify.split_grad_threshold=0.0002" \
         "strategy.reset_density.frequency=5000" \
