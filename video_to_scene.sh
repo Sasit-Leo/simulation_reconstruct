@@ -185,6 +185,38 @@ else
     fi
 fi
 
+# Auto-select best COLMAP reconstruction (sparse/0 may have 0 points while sparse/1 has many)
+BEST_SPARSE=$(python -c "
+import struct, os, glob
+sparse_dir = '$SPARSE_DIR'
+best_subdir = '0'
+best_pts = -1
+for d in sorted(glob.glob(os.path.join(sparse_dir, '*'))):
+    if not os.path.isdir(d): continue
+    pts_bin = os.path.join(d, 'points3D.bin')
+    if os.path.isfile(pts_bin):
+        with open(pts_bin, 'rb') as f:
+            n = struct.unpack('<Q', f.read(8))[0]
+        if n > best_pts:
+            best_pts = n
+            best_subdir = os.path.basename(d)
+print(f'{best_subdir} {best_pts}')
+")
+BEST_SUBDIR=$(echo "$BEST_SPARSE" | awk '{print $1}')
+BEST_PTS=$(echo "$BEST_SPARSE" | awk '{print $2}')
+
+if [ "$BEST_PTS" -gt 0 ] && [ "$BEST_SUBDIR" != "0" ]; then
+    warn "sparse/0 仅有 $(python3 -c "import struct;f=open('$SPARSE_DIR/0/points3D.bin','rb');print(struct.unpack('<Q',f.read(8))[0])") 个点，切换到 sparse/$BEST_SUBDIR ($BEST_PTS 个点)"
+    # Swap: move sparse/0 aside, move best to sparse/0
+    rm -rf "$SPARSE_DIR/_auto_bak"
+    mv "$SPARSE_DIR/0" "$SPARSE_DIR/_auto_bak"
+    mv "$SPARSE_DIR/$BEST_SUBDIR" "$SPARSE_DIR/0"
+    NUM_IMAGES_REG=$(python -c "import struct;f=open('$SPARSE_DIR/0/images.bin','rb');print(struct.unpack('<Q',f.read(8))[0])")
+    log "切换后: $NUM_IMAGES_REG 帧注册, $BEST_PTS 个点"
+elif [ "$BEST_PTS" -eq 0 ]; then
+    warn "所有 COLMAP 重建均无 3D 点！SfM 可能失败"
+fi
+
 # ================================================================================================
 # Step 3 — 3DGUT train
 # ================================================================================================
